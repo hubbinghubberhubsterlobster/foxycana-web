@@ -140,6 +140,7 @@ function compactCard(c, d){
     col: c.color || '', ct: c.cost ?? null, ink: !!c.inkwell, t: c.type || '', r: c.rarity || '',
     st: c.strength ?? null, wp: c.willpower ?? null, lo: c.lore ?? null,
     sub: c.subtypes || [], kw: c.keywordAbilities || [],
+    subDe: (d && d.subtypes) || [], kwDe: (d && d.keywordAbilities) || [],
     txt: {en: c.fullText || '', de: (d && d.fullText) || ''},
     img: {en: im.full || '', de: dim.full || ''},
     th:  {en: im.thumbnail || im.full || '', de: dim.thumbnail || dim.full || ''},
@@ -152,6 +153,7 @@ function applyCards(cd){
   S.cards = cd.cards || []; S.sets = cd.sets || {}; S.cardsDate = cd.date; S.cardsFetched = cd.fetched || 0; S.cardsV = cd.v || 1;
   S.byId = new Map(S.cards.map(c => [c.id, c]));
   if(window.ENGINE) ENGINE.reset();
+  TERMS = null;
   if(window.ASSIST) ASSIST.reset();
 }
 async function updateCards(progress=()=>{}){
@@ -174,7 +176,7 @@ async function updateCards(progress=()=>{}){
     sets[code] = {code, name:{en:s.name || code, de:sd.name || s.name || code}, release: s.releaseDate || s.prereleaseDate || '',
       base: (s.cardCounts && s.cardCounts.base) || null, type: s.type || 'expansion', num: s.number, formats: s.allowedInFormats || null};
   }
-  const cd = {v: 2, cards, sets, date: (en.metadata && en.metadata.generatedOn) || new Date().toISOString(), fetched: Date.now(), hasDe: !!de};
+  const cd = {v: 3, cards, sets, date: (en.metadata && en.metadata.generatedOn) || new Date().toISOString(), fetched: Date.now(), hasDe: !!de};
   await DB.set('cards', cd);
   applyCards(cd);
   return cd;
@@ -328,3 +330,25 @@ function parseMetaHtml(html, format){
   if(list.length < 4) return null;
   return {date: dm ? new Date(dm[1]).toISOString() : new Date().toISOString(), source:'inkdecks.com', format, list: list.slice(0, 20), fetched: Date.now(), live:true};
 }
+
+/* ---------- Kartengruppe: gleicher Name + Version = gleiche Karte (alle Drucke/Sprachen) ---------- */
+function gkey(c){ return ENGINE.norm(c.name.en + ' ' + (c.ver.en || '')); }
+
+/* ---------- Deutsche Begriffe für Schlüsselwörter und Klassifizierungen (aus den Kartendaten) ---------- */
+const KW_DE_FALLBACK = {Bodyguard:'Leibwächter', Challenger:'Herausforderer', Evasive:'Ausweichen', Reckless:'Rücksichtslos', Resist:'Widerstand',
+  Rush:'Ansturm', Shift:'Gestaltwandel', Singer:'Sänger', Support:'Unterstützung', Ward:'Schutz', Vanish:'Verschwinden', Boost:'Verstärken', 'Sing Together':'Gemeinsam singen'};
+let TERMS = null;
+function kwBase(k){ return String(k || '').replace(/[+\-]?\d+.*$/, '').replace(/\s+$/, '').trim(); }
+function terms(){
+  if(TERMS) return TERMS;
+  const kw = {}, sub = {};
+  for(const c of S.cards){
+    (c.kw || []).forEach((k, i) => { const b = kwBase(k), d = c.kwDe && c.kwDe[i] ? kwBase(c.kwDe[i]) : null; if(b && !kw[b] && d && d !== b) kw[b] = d; });
+    (c.sub || []).forEach((k, i) => { if(!sub[k] && c.subDe && c.subDe[i]) sub[k] = c.subDe[i]; });
+  }
+  for(const [k, v] of Object.entries(KW_DE_FALLBACK)) if(!kw[k]) kw[k] = v;
+  TERMS = {kw, sub};
+  return TERMS;
+}
+function kwDe(k){ return terms().kw[kwBase(k)] || kwBase(k); }
+function subDe(k){ return terms().sub[k] || k; }

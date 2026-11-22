@@ -35,7 +35,7 @@ for(const [k, s] of Object.entries(en.sets || {})){
     base: (s.cardCounts && s.cardCounts.base) || null, type: s.type || 'expansion', num: s.number, formats: s.allowedInFormats || null};
 }
 const date = (en.metadata && en.metadata.generatedOn) || new Date().toISOString();
-write('cards.json', {v: 2, cards, sets, date, hasDe: !!de});
+write('cards.json', {v: 3, cards, sets, date, hasDe: !!de});
 write('metadata.json', {generatedOn: date});
 
 // 2) Cardmarket-Preise

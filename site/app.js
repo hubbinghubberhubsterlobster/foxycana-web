@@ -209,9 +209,14 @@ function openCard(id, lang){
       <div><span>Schnitt 30 Tage</span><b>${money(p.a30)}</b></div><div><span>Foil Trend</span><b>${money(p.tf)}</b></div></div>`
       : `<div class="muted small">Für diese Karte gibt es noch keinen Cardmarket-Preis.</div>`}
     <button class="btn ghost block" style="margin-top:10px" data-act="open-url" data-url="${esc(cmUrl)}">Auf Cardmarket ansehen ↗</button>
-    <h3>In deiner Sammlung</h3><div id="own-rows">${ownRows(c)}</div>
+    <h3>In deiner Sammlung</h3><div id="own-rows">${ownRows(c)}</div>${deckUse(c)}
     ${prints.length ? `<h3>Andere Drucke</h3><div class="chips">${prints.map(x => `<button class="chip" data-act="card" data-id="${x.id}">${esc(setName(x.s))} #${x.n ?? '–'}${esc(x.v)} · ${esc(RAR_DE[x.r] || x.r)}</button>`).join('')}</div>` : ''}
   `);
+}
+function deckUse(c){
+  const AL = syncAlloc(), k = gkey(c), hs = AL.holders.get(k) || [], own = AL.own.get(k) || 0, used = AL.used.get(k) || 0;
+  if(!own && !hs.length) return '';
+  return `<div class="tiny muted" style="margin-top:8px">${hs.length ? 'In Decks: ' + hs.map(h => `<b>${esc(h.d.name)}</b> ${h.n}×`).join(', ') + ' · ' : ''}frei: <b>${Math.max(0, own - used)}</b> (alle Drucke & Sprachen zusammen)</div>`;
 }
 function ownRows(c){
   const rows = [['de',0,'Deutsch'],['de',1,'Deutsch · Foil'],['en',0,'Englisch'],['en',1,'Englisch · Foil']];
@@ -256,21 +261,58 @@ A['search-pick'] = el => { const c = S.byId.get(+el.dataset.id || el.dataset.id)
 /* =========================================================
    Decks
    ========================================================= */
+/* ---------- Karten sind fest einem Deck zugeordnet ----------
+   Jede Karte (alle Drucke/Sprachen zusammen) kann nur so oft in Decks liegen, wie du sie besitzt.
+   Freie Karten werden Decks automatisch zugeordnet (ältere Decks zuerst). Aus einem anderen Deck
+   holst du eine Karte nur bewusst – dann fehlt sie dort. */
+let ALLOC = null;
+function deckNeeds(d){ const m = new Map(); for(const [id, n] of Object.entries(d.cards || {})){ const c = S.byId.get(+id) || S.byId.get(id); if(!c) continue; const k = gkey(c); m.set(k, (m.get(k) || 0) + n); } return m; }
+function ownedByKey(){ const m = new Map(); for(const e of entries()){ const k = gkey(e.c); m.set(k, (m.get(k) || 0) + e.q); } return m; }
+function syncAlloc(){
+  const own = ownedByKey(), used = new Map();
+  const before = JSON.stringify(S.decks.map(d => d.alloc || {}));
+  const decks = [...S.decks].sort((a, b) => (a.created || 0) - (b.created || 0));
+  const needs = new Map(decks.map(d => [d.id, deckNeeds(d)]));
+  const free = k => Math.max(0, (own.get(k) || 0) - (used.get(k) || 0));
+  for(const d of decks){
+    const al = d.alloc || (d.alloc = {}), need = needs.get(d.id);
+    for(const k of Object.keys(al)){ const n = Math.min(al[k], need.get(k) || 0, free(k)); if(n > 0){ al[k] = n; used.set(k, (used.get(k) || 0) + n); } else delete al[k]; }
+  }
+  for(const d of decks){
+    const al = d.alloc;
+    for(const [k, n] of needs.get(d.id)){ const have = al[k] || 0; if(have >= n) continue; const add = Math.min(n - have, free(k)); if(add > 0){ al[k] = have + add; used.set(k, (used.get(k) || 0) + add); } }
+  }
+  const holders = new Map();
+  for(const d of decks) for(const [k, n] of Object.entries(d.alloc)){ if(!holders.has(k)) holders.set(k, []); holders.get(k).push({d, n}); }
+  ALLOC = {own, used, holders, needs};
+  if(JSON.stringify(S.decks.map(d => d.alloc || {})) !== before) persist();
+  return ALLOC;
+}
 function deckStats(d){
-  let count = 0, value = 0, missing = 0, missingValue = 0, inkable = 0; const inks = new Set(); const curve = Array(9).fill(0); const types = {};
+  const AL = ALLOC || syncAlloc();
+  let count = 0, value = 0, inkable = 0; const inks = new Set(); const curve = Array(9).fill(0); const types = {};
   for(const [id, n] of Object.entries(d.cards)){
     const c = S.byId.get(+id) || S.byId.get(id); if(!c) continue;
     count += n; inkList(c).forEach(k => inks.add(k));
-    const p = priceEUR(c, false) || 0; value += p * n;
-    const have = ownedQty(c.id); if(have < n){ missing += n - have; missingValue += p * (n - have); }
+    value += (priceEUR(c, false) || 0) * n;
     if(c.ink) inkable += n; curve[Math.min(8, c.ct || 0)] += n; types[c.t] = (types[c.t] || 0) + n;
   }
-  return {count, value, missing, missingValue, inkable, inks:[...inks], curve, types};
+  let missing = 0, inOther = 0, buy = 0, missingValue = 0;
+  const need = AL.needs.get(d.id) || deckNeeds(d);
+  for(const [k, n] of need){
+    const a = (d.alloc && d.alloc[k]) || 0; if(a >= n) continue;
+    missing += n - a;
+    const notOwned = Math.max(0, n - (AL.own.get(k) || 0));
+    buy += notOwned; inOther += n - a - notOwned;
+  }
+  for(const [id, n] of Object.entries(d.cards)){ const c = S.byId.get(+id) || S.byId.get(id); if(!c) continue; const k = gkey(c); const notOwned = Math.max(0, (need.get(k) || 0) - (AL.own.get(k) || 0)); if(notOwned) missingValue += (priceEUR(c, false) || 0) * Math.min(n, notOwned); }
+  return {count, value, missing, inOther, buy, missingValue, inkable, inks:[...inks], curve, types};
 }
 function inkColDots(inks){ return inks.map(k => `<i class="dot" style="background:${(INKS[k]||{}).c}"></i>`).join(''); }
 const TIER_COL = {S:'#F5D58E', A:'#3CCB7F', B:'#1C8FD6', C:'#9A9CB8', D:'#FF6B6B'};
 function tierBadge(r){ return r ? `<div style="text-align:center;min-width:44px"><div style="font-weight:800;font-size:20px;color:${TIER_COL[r.tier]}">${r.tier}</div><div class="tiny muted">${r.score}</div></div>` : '<div style="min-width:44px"></div>'; }
 function renderDecks(){
+  syncAlloc();
   const rated = S.decks.map(d => ({d, r: window.ASSIST ? ASSIST.rateDeck(d) : null})).sort((a, b) => (b.r ? b.r.score : -1) - (a.r ? a.r.score : -1));
   if(window.ASSIST && !ASSIST.metaLoaded() && !renderDecks.loading){ renderDecks.loading = true; ASSIST.loadMeta().then(() => { if(S.ui.tab === 'decks' && !S.ui.deck && !S.ui.assist) renderDecks(); }); }
   const list = rated.map(({d, r}, i) => { const st = deckStats(d); return `<button class="deck-item" data-act="deck-open" data-id="${d.id}">
@@ -279,7 +321,7 @@ function renderDecks(){
       <div class="grow"><b class="ell" style="display:block">${esc(d.name)}</b>
       <div class="tiny muted">${st.count} Karten · ${st.inks.map(k => INKS[k].de).join('/') || 'leer'}${d.src === 'prebuilt' ? ' · Fertigdeck' : ''}</div>
       ${r && r.arche ? `<div class="tiny muted ell">≈ Meta: ${esc(r.arche.name)} (${r.arche.share}% · ${r.arche.wr ?? '–'}% Siege)</div>` : ''}
-      ${st.missing ? `<div class="miss">${st.missing} fehlen (${money(st.missingValue)})</div>` : st.count ? '<div class="tiny" style="color:var(--good)">Alle Karten vorhanden</div>' : ''}</div>
+      ${st.missing ? `<div class="miss">${st.missing} fehlen${st.inOther ? ` · ${st.inOther} in anderen Decks` : ''}${st.buy ? ` · ${st.buy} nicht im Besitz` : ''}</div>` : st.count ? '<div class="tiny" style="color:var(--good)">✓ Spielbereit</div>' : ''}</div>
       <div style="text-align:right"><div class="gold small">${money(st.value)}</div>${r ? `<div class="tiny muted">#${i + 1}</div>` : ''}</div></button>`; }).join('');
   view.innerHTML = `<div class="row">${backBtn()}<h1 class="grow">Decks</h1></div>
     <button class="deck-item assist-cta" data-act="assist-open"><span style="font-size:26px">✨</span><div class="grow"><b style="display:block">Deck-Assistent</b><span class="tiny muted">Baut die stärksten Decks aus deinen Karten und zeigt, was gerade in der Meta stark ist</span></div><span class="muted">›</span></button>
@@ -298,6 +340,7 @@ A['deck-new'] = async () => {
 function currentDeck(){ return S.decks.find(d => d.id === S.ui.deck); }
 function renderDeck(){
   const d = currentDeck(); if(!d){ S.ui.deck = null; return renderDecks(); }
+  syncAlloc();
   const st = deckStats(d); const maxC = Math.max(1, ...st.curve);
   const cards = Object.entries(d.cards).map(([id, n]) => ({c: S.byId.get(+id) || S.byId.get(id), n})).filter(x => x.c)
     .sort((a, b) => (a.c.ct ?? 0) - (b.c.ct ?? 0) || cName(a.c).localeCompare(cName(b.c), 'de'));
@@ -310,17 +353,23 @@ function renderDeck(){
     <div class="row" style="margin-bottom:8px"><button class="round" style="background:var(--surface2)" data-act="deck-back">‹</button><h1 class="grow ell" style="margin:0">${esc(d.name)}</h1><button class="chip" data-act="deck-rename">✎</button></div>
     <div class="hero"><div class="row between"><div><div class="lbl">Deckwert</div><div class="big">${money(st.value)}</div></div><div class="deck-inks" style="flex-direction:row">${inkColDots(st.inks)}</div></div>
       <div class="stats"><div><b>${st.count}</b>Karten</div><div><b>${st.inkable}</b>tintenfähig</div><div><b style="color:${st.missing ? 'var(--bad)' : 'var(--good)'}">${st.missing}</b>fehlen</div></div>
-      ${st.missing ? `<div class="tiny" style="color:#ffc9c9;margin-top:8px">Fehlende Karten kosten ca. ${money(st.missingValue)}</div>` : ''}</div>
+      ${st.missing ? `<div class="tiny" style="color:#ffc9c9;margin-top:8px">${st.inOther ? `${st.inOther} stecken in anderen Decks` : ''}${st.inOther && st.buy ? ' · ' : ''}${st.buy ? `${st.buy} hast du nicht (ca. ${money(st.missingValue)})` : ''}</div>` : `<div class="tiny" style="color:#9fe3bf;margin-top:8px">✓ Spielbereit – alle Karten liegen in diesem Deck</div>`}</div>
     ${(() => { const r = window.ASSIST ? ASSIST.rateDeck(d) : null; if(!r) return ''; return `<div class="card row" style="margin-bottom:12px">${tierBadge(r)}<div class="grow"><b>Meta-Einschätzung: Stufe ${r.tier}</b>
       <div class="tiny muted">${r.arche ? `Entspricht <b>${esc(r.arche.name)}</b> (${esc(r.arche.inks.map(k => INKS[k].de).join(' & '))}) – ${r.arche.share}% der Turnierdecks, ${r.arche.wr ?? '–'}% Siege` : 'Kein bekannter Meta-Archetyp – eher ein eigenes Deck'}</div>
       <div class="tiny muted">Kartenstärke ${Math.round(r.quality * 100)}/100${r.illegal ? ` · <span style="color:var(--bad)">${r.illegal} Karten nicht Core-legal</span>` : ''} · Meta ${r.live ? 'live' : 'Stand'} ${fmtDate(r.metaDate)}</div></div></div>`; })()}
     ${warn.length ? `<div class="warn" style="margin-bottom:12px">${warn.map(esc).join('<br>')}</div>` : ''}
+    ${window.ASSIST && cards.length ? `<details class="guide-box"><summary>📖 So spielst du dieses Deck</summary>${ASSIST.guide(cards)}</details>` : ''}
     <div class="card"><b class="small">Kostenkurve</b><div class="curve">${st.curve.map((n, i) => `<div><span>${n || ''}</span><i style="height:${Math.round(n / maxC * 56)}px"></i>${i === 8 ? '8+' : i}</div>`).join('')}</div></div>
     <div class="row" style="gap:8px;margin:12px 0"><button class="btn grow" data-act="deck-add">+ Karten</button><button class="btn ghost" data-act="deck-menu">⋯</button></div>
     ${Object.entries(groups).map(([t, xs]) => `<h3>${esc(TYPE_DE[t] || t)} <span class="muted">(${xs.reduce((s, x) => s + x.n, 0)})</span></h3>` + xs.map(x => {
-      const have = ownedQty(x.c.id);
-      return `<div class="deck-line"><span class="cost">${x.c.ct ?? '–'}</span><img src="${esc(cThumb(x.c))}" loading="lazy" data-act="card" data-id="${x.c.id}">
-        <div class="grow" data-act="card" data-id="${x.c.id}"><div class="ell"><b>${esc(cName(x.c))}</b></div><div class="tiny muted ell">${esc(cVer(x.c))} ${have < x.n ? `<span class="miss">· ${x.n - have} fehlt</span>` : ''}</div></div>
+      const k = gkey(x.c), need = ALLOC.needs.get(d.id).get(k) || x.n, a = (d.alloc && d.alloc[k]) || 0, miss = Math.max(0, need - a);
+      const others = (ALLOC.holders.get(k) || []).filter(h => h.d.id !== d.id);
+      const notOwned = Math.max(0, need - (ALLOC.own.get(k) || 0));
+      const status = !miss ? '<span style="color:var(--good)">✓ im Deck</span>'
+        : `<span class="miss">${miss} fehlt</span>${notOwned ? ` <span class="tiny muted">· ${notOwned} nicht im Besitz (${money((priceEUR(x.c, false) || 0) * notOwned)})</span>` : ''}`
+          + others.map(h => `<button class="chip mini" data-act="alloc-take" data-k="${esc(k)}" data-from="${h.d.id}">↩ aus „${esc(h.d.name)}“ holen (${h.n})</button>`).join('');
+      return `<div class="deck-line" style="align-items:flex-start"><span class="cost">${x.c.ct ?? '–'}</span><img src="${esc(cThumb(x.c))}" loading="lazy" data-act="card" data-id="${x.c.id}">
+        <div class="grow"><div class="ell" data-act="card" data-id="${x.c.id}"><b>${esc(cName(x.c))}</b> <span class="tiny muted">${esc(cVer(x.c))}</span></div><div class="tiny" style="display:flex;flex-wrap:wrap;gap:4px 8px;align-items:center;margin-top:2px">${status}</div></div>
         <div class="stepper"><button data-act="deck-step" data-id="${x.c.id}" data-d="-1">−</button><b>${x.n}</b><button data-act="deck-step" data-id="${x.c.id}" data-d="1">+</button></div></div>`; }).join('')).join('')
       || `<div class="empty">Noch keine Karten im Deck.</div>`}`;
 }
@@ -329,6 +378,17 @@ A['rank-info'] = () => openSheet(`<h2>So entsteht das Ranking</h2><p class="mute
   <div class="item">🏆 <div class="grow"><b>Meta (25 %)</b><br><span class="muted">Passt das Deck zu einem aktuellen Turnier-Archetyp? Dann zählen dessen Siegquote und Verbreitung (inkdecks.com)</span></div></div>
   <div class="item">⚠️ <div class="grow"><b>Abzüge</b><br><span class="muted">Weniger als 60 Karten, mehr als 2 Farben oder Karten, die in Core nicht mehr erlaubt sind</span></div></div></div>
   <p class="tiny muted">Das ist eine Einschätzung – echte Turnierergebnisse hängen auch vom Spielen ab 😉</p><div class="actions"><button class="btn" data-act="sheet-close">Alles klar</button></div>`);
+A['alloc-take'] = el => {
+  const d = currentDeck(), from = S.decks.find(x => x.id === el.dataset.from), k = el.dataset.k; if(!d || !from) return;
+  syncAlloc();
+  const need = ALLOC.needs.get(d.id).get(k) || 0, have = d.alloc[k] || 0, can = Math.min(need - have, from.alloc[k] || 0);
+  if(can <= 0) return;
+  from.alloc[k] -= can; if(!from.alloc[k]) delete from.alloc[k];
+  d.alloc[k] = have + can;
+  // Damit das andere Deck die Karte nicht sofort zurückholt: dieses Deck bekommt Vorrang
+  persist(); syncAlloc(); renderDeck();
+  toast(`${can}× ins Deck geholt – in „${from.name}“ fehlt sie jetzt`, 3500);
+};
 A['deck-step'] = el => { const d = currentDeck(); const id = el.dataset.id; d.cards[id] = (d.cards[id] || 0) + +el.dataset.d; if(d.cards[id] <= 0) delete d.cards[id]; persist(); renderDeck(); };
 A['deck-add'] = () => {
   const d = currentDeck(); const st = deckStats(d);
@@ -880,7 +940,7 @@ async function backgroundRefresh(){
   let errs = 0; setSync('⟳ Aktualisiere Daten …');
   try{
     const md = await getJSON(WEB ? wd('metadata.json') : LJ + 'en/metadata.json');
-    if(!S.cardsDate || (md.generatedOn && md.generatedOn !== S.cardsDate) || S.cardsV !== 2){ setSync('⟳ Neue Kartendaten werden geladen …'); await updateCards(); }
+    if(!S.cardsDate || (md.generatedOn && md.generatedOn !== S.cardsDate) || S.cardsV !== 3){ setSync('⟳ Neue Kartendaten werden geladen …'); await updateCards(); }
   }catch(e){ errs++; console.warn(e); }
   try{ setSync('⟳ Aktualisiere Preise …'); await updatePrices(); }catch(e){ errs++; console.warn(e); }
   try{ await updateRates(); }catch(e){ errs++; console.warn(e); }
