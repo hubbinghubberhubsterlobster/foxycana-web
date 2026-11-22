@@ -60,6 +60,7 @@ A.back = () => { if(!goBack()) go({tab:'collection', deck:null, assist:null}); }
 // Hauptseiten (unten) haben keinen Verlauf: dort gibt es kein Zurück
 A.tab = el => { const t = el.dataset.tab; NAV.length = 0; if(t === S.ui.tab && !S.ui.deck && !S.ui.assist && !(t === 'collection' && S.ui.set)){ window.scrollTo(0, 0); render(); return; } Object.assign(S.ui, {tab:t, deck:null, assist:null, limit:240}); if(t === 'collection') S.ui.set = ''; render(); window.scrollTo(0, 0); };
 function render(){
+  if(SEL && S.ui.tab !== 'collection') selEnd();
   $$('#nav .nav-btn').forEach(b => b.classList.toggle('on', b.dataset.tab === S.ui.tab));
   if(!S.cards.length){ return; }
   const t = S.ui.tab;
@@ -103,7 +104,7 @@ function renderCollection(){
     <div class="row" style="margin-bottom:12px"><div class="chips grow">${inkButtons(u.inks, 'ink')}</div>
       <button class="chip ${filterActive() ? 'on' : ''}" data-act="filters">Filter ${filterActive() ? `<span class="badge">${filterActive()}</span>` : ''}</button></div>
     ${u.set ? `<div class="row" style="margin:-4px 0 12px"><span class="chip on">${esc(setName(u.set))}</span><button class="chip" data-act="clear-set">✕ Set</button></div>` : ''}
-    <div id="grid-info" class="muted small" style="margin-bottom:8px"></div>
+    <div class="row between" style="margin-bottom:8px"><div id="grid-info" class="muted small"></div><button class="chip" data-act="sel-start">☑ Auswählen</button></div>
     <div id="grid" class="grid"></div><div id="grid-more"></div>`;
   const q = $('#q'); let qt = null;
   q.oninput = () => { clearTimeout(qt); qt = setTimeout(() => { S.ui.q = q.value.trim(); S.ui.limit = 240; renderGrid(); }, 180); };
@@ -133,8 +134,10 @@ function renderGrid(){
       : `<div class="empty">Keine Karten gefunden.</div>`;
     return;
   }
+  GRID_IDS = items.map(a => a.c.id);
   grid.innerHTML = shown.map(a => tile(a.c, {q:a.q, qf:a.qf, missing: u.mode === 'all' && !a.q, price: u.mode === 'owned' ? (a.q ? a.value / a.q : null) : null,
     lang: u.mode === 'owned' && a.langs ? (Object.entries(a.langs).sort((x,y) => y[1]-x[1])[0] || [dl()])[0] : dl()})).join('');
+  if(SEL) $$('#grid .tile').forEach(t => t.classList.toggle('chosen', SEL.has(+t.dataset.id || t.dataset.id)));
   $('#grid-more').innerHTML = items.length > shown.length ? `<div style="text-align:center;margin:18px 0"><button class="btn ghost" data-act="more-cards">Weitere ${Math.min(240, items.length - shown.length)} anzeigen</button></div>` : '';
 }
 function setOrder(code){ const s = S.sets[code]; return s && s.release ? s.release : (/^\d+$/.test(code) ? String(2000 + +code) : '9999'); }
@@ -185,7 +188,83 @@ A['open-set'] = el => { go({tab:'collection', mode:'all', set: el.dataset.set, s
    Kartendetail
    ========================================================= */
 let detailState = {id:null, lang:null};
-A.card = el => openCard(+el.dataset.id || el.dataset.id);
+A.card = el => { const id = +el.dataset.id || el.dataset.id; if(SEL && el.classList.contains('tile')){ selToggle(id, el); return; } openCard(id); };
+
+/* ---------- Mehrfachauswahl in der Sammlung ---------- */
+let SEL = null, GRID_IDS = [], lpTimer = null, lpFired = false;
+function selBar(){
+  let bar = $('#selbar');
+  if(!SEL){ if(bar) bar.remove(); document.body.classList.remove('selecting'); $$('.tile.chosen').forEach(t => t.classList.remove('chosen')); return; }
+  document.body.classList.add('selecting');
+  if(!bar){ bar = document.createElement('div'); bar.id = 'selbar'; document.body.appendChild(bar); }
+  const n = SEL.size, owned = S.ui.mode === 'owned';
+  let copies = 0; for(const id of SEL) copies += ownedQty(id);
+  bar.innerHTML = `<div class="row between" style="margin-bottom:8px"><b>${n} ausgewählt${copies ? ` <span class="tiny muted">(${copies} Exemplare)</span>` : ''}</b>
+      <div class="row" style="gap:6px"><button class="chip" data-act="sel-all">Alle (${GRID_IDS.length})</button><button class="chip" data-act="sel-none">Keine</button><button class="chip" data-act="sel-end">✕</button></div></div>
+    <div class="row" style="gap:8px">
+      <button class="btn small grow" data-act="sel-deck" ${n ? '' : 'disabled'}>➕ Zu Deck</button>
+      <button class="btn small ghost grow" data-act="sel-add" ${n ? '' : 'disabled'}>＋1 Stück</button>
+      ${owned ? `<button class="btn small danger grow" data-act="sel-delete" ${n ? '' : 'disabled'}>🗑 Löschen</button>` : ''}</div>`;
+}
+function selStart(firstId){ SEL = new Set(firstId != null ? [firstId] : []); $$('#grid .tile').forEach(t => t.classList.toggle('chosen', SEL.has(+t.dataset.id || t.dataset.id))); selBar(); }
+function selToggle(id, el){ if(SEL.has(id)) SEL.delete(id); else SEL.add(id); if(el) el.classList.toggle('chosen', SEL.has(id)); selBar(); }
+function selEnd(){ SEL = null; selBar(); }
+A['sel-start'] = () => SEL ? selEnd() : selStart();
+A['sel-end'] = selEnd;
+A['sel-all'] = () => { GRID_IDS.forEach(id => SEL.add(id)); $$('#grid .tile').forEach(t => t.classList.add('chosen')); selBar(); };
+A['sel-none'] = () => { SEL.clear(); $$('#grid .tile').forEach(t => t.classList.remove('chosen')); selBar(); };
+A['sel-delete'] = async () => {
+  const ids = [...SEL]; let copies = 0; for(const id of ids) copies += ownedQty(id);
+  const how = await ask(`${ids.length} Karten löschen?`, `Du hast davon zusammen ${copies} Exemplare. Wie soll ich löschen? Tipp: Vorher wird automatisch ein Backup gespeichert.`,
+    [{l:'Komplett entfernen', v:'all', c:'danger'}, {l:'Je 1 Exemplar weniger', v:'one', c:'ghost'}, {l:'Abbrechen', v:null, c:'ghost'}]);
+  if(!how) return;
+  try{ autoBackup(true); }catch(e){}
+  let removed = 0;
+  for(const id of ids){
+    const keys = Object.keys(S.coll).filter(k => k.split('|')[0] === String(id));
+    if(how === 'all'){ for(const k of keys){ removed += S.coll[k].q; delete S.coll[k]; } }
+    else { const k = keys.sort((a, b) => (S.coll[a].t || 0) - (S.coll[b].t || 0)).pop(); if(k){ addCard(id, k.split('|')[1], k.split('|')[2] === '1', -1); removed++; } }
+  }
+  persist(); selEnd(); renderCollection(); toast(`${removed} Exemplare entfernt`);
+};
+A['sel-add'] = async () => {
+  const lang = await ask('Zur Sammlung hinzufügen', `Je 1 Exemplar von ${SEL.size} Karten hinzufügen. Welche Sprache?`, [{l:'Deutsch', v:'de'}, {l:'Englisch', v:'en'}, {l:'Abbrechen', v:null, c:'ghost'}]);
+  if(!lang) return;
+  for(const id of SEL) addCard(id, lang, false, 1);
+  const n = SEL.size; selEnd(); renderCollection(); toast(`${n} Karten hinzugefügt`);
+};
+A['sel-deck'] = () => {
+  openSheet(`<h2>${SEL.size} Karten zu Deck hinzufügen</h2>
+    <label class="lbl">Anzahl pro Karte</label><div class="seg" id="sd-n"><button class="on" data-act="sd-n" data-n="1">Je 1</button><button data-act="sd-n" data-n="own">So viele ich habe (max. 4)</button><button data-act="sd-n" data-n="4">Je 4</button></div>
+    <div class="list">${S.decks.map(d => `<button class="item" style="width:100%;text-align:left" data-act="sd-pick" data-id="${d.id}"><div class="deck-inks">${inkColDots(deckStats(d).inks)}</div><div class="grow"><b>${esc(d.name)}</b><div class="tiny muted">${deckStats(d).count} Karten</div></div><span class="muted">›</span></button>`).join('')}
+      <button class="item" style="width:100%;text-align:left" data-act="sd-pick" data-id="new"><span style="font-size:20px">＋</span><div class="grow"><b>Neues Deck</b></div></button></div>`);
+  window.__sdN = '1';
+};
+A['sd-n'] = el => { window.__sdN = el.dataset.n; $$('#sd-n button').forEach(b => b.classList.toggle('on', b === el)); };
+A['sd-pick'] = async el => {
+  let d;
+  if(el.dataset.id === 'new'){ const name = await promptText('Neues Deck', '', 'Name des Decks'); if(!name) return; d = {id:'d' + Date.now(), name, cards:{}, src:'manual', created: Date.now()}; S.decks.unshift(d); }
+  else d = S.decks.find(x => x.id === el.dataset.id);
+  if(!d) return;
+  const mode = window.__sdN; let n = 0;
+  for(const id of SEL){
+    const c = S.byId.get(id); if(!c) continue;
+    const max = c.max === undefined || c.max == null ? 4 : Math.min(4, c.max);
+    const want = mode === 'own' ? Math.min(max, Math.max(1, ownedQty(id))) : mode === '4' ? max : 1;
+    const cur = d.cards[id] || 0, add = Math.max(0, Math.min(want, max - cur));
+    if(add){ d.cards[id] = cur + add; n += add; }
+  }
+  closeSheet(); persist(); selEnd(); toast(`${n} Karten zu „${d.name}“ hinzugefügt`);
+  go({tab:'decks', deck: d.id, assist:null});
+};
+// Lange drücken auf eine Karte startet die Auswahl
+document.addEventListener('pointerdown', e => {
+  const t = e.target.closest('#grid .tile'); if(!t || SEL) return;
+  lpFired = false; clearTimeout(lpTimer);
+  lpTimer = setTimeout(() => { lpFired = true; if(NATIVE) NATIVE.vibrate(25); selStart(+t.dataset.id || t.dataset.id); }, 480);
+});
+['pointerup', 'pointercancel', 'pointermove'].forEach(ev => document.addEventListener(ev, e => { if(ev === 'pointermove' && (Math.abs(e.movementX) + Math.abs(e.movementY)) < 3) return; clearTimeout(lpTimer); }));
+document.addEventListener('click', e => { if(lpFired && e.target.closest('#grid .tile')){ e.stopPropagation(); e.preventDefault(); lpFired = false; } }, true);
 function openCard(id, lang){
   const c = S.byId.get(id); if(!c) return;
   detailState = {id, lang: lang || detailState.lang || dl()};
@@ -909,6 +988,7 @@ document.addEventListener('click', e => {
 });
 window.__androidBack = () => {
   if(sheetOpen()){ closeSheet(); return true; }
+  if(SEL){ selEnd(); return true; }
   if(!$('#scan').hidden){ A['scan-close'](); return true; }
   if(goBack()) return true;
   if(S.ui.tab !== 'collection' || S.ui.deck || S.ui.assist){ Object.assign(S.ui, {tab:'collection', deck:null, assist:null}); render(); return true; }
