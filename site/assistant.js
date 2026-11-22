@@ -463,7 +463,9 @@ const ASSIST = (() => {
       <div class="row wrap" style="gap:6px;margin-bottom:12px">${features(a).map(f => `<span class="chip">${esc(f)}</span>`).join('')}</div>
       ${rt.arche ? `<div class="card small" style="margin-bottom:12px">🏆 Entspricht dem Meta-Deck <b>${esc(rt.arche.name)}</b> – ${rt.arche.share}% der Turnierdecks, ${rt.arche.wr ?? '–'}% Siege.</div>` : ''}
       <details class="guide-box"><summary>📖 So spielst du dieses Deck</summary>${guide(cards)}</details>
-      <div class="row" style="gap:8px"><button class="btn grow" data-act="as-save">Als Deck speichern</button>${st.mode === 'owned' ? `<button class="btn ghost" data-act="as-alt">Mit Kauftipps</button>` : `<button class="btn ghost" data-act="as-alt">Nur meine</button>`}</div>
+      ${st.metaPick ? `<div class="seg" style="margin-bottom:6px"><button class="${st.mode === 'best' ? 'on' : ''}" data-act="as-alt" data-m="best">Meta-Version</button><button class="${st.mode === 'owned' ? 'on' : ''}" data-act="as-alt" data-m="owned">Mit meinen Karten</button></div>
+      <p class="tiny muted" style="margin:0 0 10px">${st.mode === 'best' ? `So sieht das Deck in Bestform aus – davon hast du <b>${r.ownedCopies}/60</b> Karten. Die fehlenden stehen unten mit Preis.` : `Deine spielbare Version: Fehlende Meta-Karten wurden durch deine eigenen Karten in diesen Farben ersetzt – deshalb ist das Deck vollständig, aber nicht mehr ganz das Meta-Deck.`} Foxycana baut das Deck aus Kartenstärke und Thema nach, es ist keine exakte Turnier-Liste.</p>` : ''}
+      <div class="row" style="gap:8px"><button class="btn grow" data-act="as-save">Als Deck speichern</button>${st.metaPick ? '' : st.mode === 'owned' ? `<button class="btn ghost" data-act="as-alt" data-m="best">Mit Kauftipps</button>` : `<button class="btn ghost" data-act="as-alt" data-m="owned">Nur meine</button>`}</div>
       <div class="card" style="margin-top:12px"><b class="small">Kostenkurve</b><div class="curve">${curve.map((n, i) => `<div><span>${n || ''}</span><i style="height:${Math.round(n / mx * 56)}px"></i>${i === 8 ? '8+' : i}</div>`).join('')}</div></div>
       <h3>Deckliste</h3>${lines.map(x => `<div class="deck-line"><span class="cost">${x.g.rep.ct ?? '–'}</span><img src="${esc(cThumb(x.g.ownCard || x.g.rep))}" loading="lazy" data-act="card" data-id="${(x.g.ownCard || x.g.rep).id}">
         <div class="grow" data-act="card" data-id="${(x.g.ownCard || x.g.rep).id}"><div class="ell"><b>${x.n}× ${esc(cName(x.g.rep))}</b></div><div class="tiny muted ell">${esc(cVer(x.g.rep))}${x.miss ? ` <span class="miss">· ${x.miss} fehlt (${money((x.g.price || 0) * x.miss)})</span>` : ''}</div></div>
@@ -496,10 +498,11 @@ const ASSIST = (() => {
     const a = META.list[+el.dataset.i]; if(!a) return;
     st.metaPick = a; st.title = 'Meta-Deck: ' + metaNameDe(a.name);
     busy('Baue „' + metaNameDe(a.name) + '“ …');
-    setTimeout(() => { ensure(); st.results = [buildDeck(a.inks, metaOpt(a, st.mode))]; st.sel = 0; go({assist:'deck'}); }, 30);
+    st.mode = 'best';
+    setTimeout(() => { ensure(); st.results = [buildDeck(a.inks, metaOpt(a, 'best'))]; st.sel = 0; go({assist:'deck'}); }, 30);
   };
-  A['as-alt'] = () => {
-    const r = st.results[st.sel]; st.mode = st.mode === 'owned' ? 'best' : 'owned';
+  A['as-alt'] = el => {
+    const r = st.results[st.sel]; const m = el.dataset.m || (st.mode === 'owned' ? 'best' : 'owned'); if(m === st.mode) return; st.mode = m;
     ensure(); const opt = Object.assign({}, r.opt, {mode: st.mode});
     st.results[st.sel] = buildDeck(r.pair, opt); render();
   };
