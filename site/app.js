@@ -57,7 +57,8 @@ function go(ch){ NAV.push(snap()); if(NAV.length > 50) NAV.shift(); Object.assig
 function goBack(){ if(!NAV.length) return false; const st = NAV.pop(); const y = st.y; delete st.y; Object.assign(S.ui, st); render(); setTimeout(() => window.scrollTo(0, y || 0), 0); return true; }
 function backBtn(){ return NAV.length ? `<button class="round back" data-act="back" aria-label="Zurück">‹</button>` : ''; }
 A.back = () => { if(!goBack()) go({tab:'collection', deck:null, assist:null}); };
-A.tab = el => { const t = el.dataset.tab; if(t === S.ui.tab && !S.ui.deck && !S.ui.assist){ window.scrollTo(0, 0); return; } go({tab:t, deck:null, assist:null}); };
+// Hauptseiten (unten) haben keinen Verlauf: dort gibt es kein Zurück
+A.tab = el => { const t = el.dataset.tab; NAV.length = 0; if(t === S.ui.tab && !S.ui.deck && !S.ui.assist && !(t === 'collection' && S.ui.set)){ window.scrollTo(0, 0); render(); return; } Object.assign(S.ui, {tab:t, deck:null, assist:null, limit:240}); if(t === 'collection') S.ui.set = ''; render(); window.scrollTo(0, 0); };
 function render(){
   $$('#nav .nav-btn').forEach(b => b.classList.toggle('on', b.dataset.tab === S.ui.tab));
   if(!S.cards.length){ return; }
@@ -116,12 +117,12 @@ function renderGrid(){
       && (!u.lang || a.langs[u.lang]) && (!u.foil || (u.foil === 'foil' ? a.qf > 0 : a.q - a.qf > 0)));
     const so = u.sort;
     items.sort((a, b) => so === 'name' ? cName(a.c).localeCompare(cName(b.c), 'de') : so === 'new' ? b.t - a.t : so === 'qty' ? b.q - a.q
-      : so === 'number' ? cmpNum(a.c, b.c) : (b.value - a.value) || cName(a.c).localeCompare(cName(b.c), 'de'));
+      : so === 'number' ? cmpNum(a.c, b.c) : so === 'total' ? (b.value - a.value) : ((b.value / b.q) - (a.value / a.q)) || (b.value - a.value) || cName(a.c).localeCompare(cName(b.c), 'de'));
   } else {
     const own = ownedById();
     items = S.cards.filter(matchCard).map(c => { const a = own.get(c.id); return {c, q: a ? a.q : 0, qf: a ? a.qf : 0, value: priceEUR(c, false) || 0, t: a ? a.t : 0}; });
     const so = u.sort;
-    items.sort((a, b) => so === 'name' ? cName(a.c).localeCompare(cName(b.c), 'de') : so === 'value' ? b.value - a.value : so === 'qty' ? b.q - a.q : so === 'new' ? b.t - a.t : cmpNum(a.c, b.c));
+    items.sort((a, b) => so === 'name' ? cName(a.c).localeCompare(cName(b.c), 'de') : (so === 'value' || so === 'total') ? b.value - a.value : so === 'qty' ? b.q - a.q : so === 'new' ? b.t - a.t : cmpNum(a.c, b.c));
   }
   const shown = items.slice(0, u.limit);
   $('#grid-info').textContent = items.length ? `${items.length} ${items.length === 1 ? 'Karte' : 'Karten'}` + (u.mode === 'all' ? ` · ${items.filter(i => i.q).length} im Besitz` : '') : '';
@@ -147,7 +148,7 @@ A.filters = () => {
   const sets = Object.values(S.sets).sort((a, b) => setOrder(a.code) < setOrder(b.code) ? -1 : 1);
   const opt = (v, l, cur) => `<option value="${esc(v)}" ${v === cur ? 'selected' : ''}>${esc(l)}</option>`;
   openSheet(`<h2>Filter & Sortierung</h2>
-    <label class="lbl">Sortieren nach</label><select id="f-sort">${[['value','Wert'],['name','Name'],['number','Set & Nummer'],['new','Zuletzt hinzugefügt'],['qty','Anzahl']].map(([v,l]) => opt(v,l,u.sort)).join('')}</select>
+    <label class="lbl">Sortieren nach</label><select id="f-sort">${[['value','Preis pro Karte'],['total','Gesamtwert (Preis × Anzahl)'],['name','Name'],['number','Set & Nummer'],['new','Zuletzt hinzugefügt'],['qty','Anzahl']].map(([v,l]) => opt(v,l,u.sort)).join('')}</select>
     <label class="lbl">Set</label><select id="f-set">${opt('', 'Alle Sets', u.set)}${sets.map(s => opt(s.code, setName(s.code) + ' (' + s.code + ')', u.set)).join('')}</select>
     <label class="lbl">Seltenheit</label><select id="f-rar">${opt('', 'Alle', u.rarity)}${RARITIES.map(r => opt(r, RAR_DE[r], u.rarity)).join('')}</select>
     <label class="lbl">Kartentyp</label><select id="f-type">${opt('', 'Alle', u.type)}${Object.entries(TYPE_DE).map(([k,v]) => opt(k, v, u.type)).join('')}</select>
