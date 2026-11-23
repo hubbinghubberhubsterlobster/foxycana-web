@@ -57,12 +57,13 @@ const S = {
   rates: {EUR:1}, ratesDate: null, ratesFetched: 0,
   coll: {},      // "id|lang|foil" -> {q, t}
   decks: [],
+  bundles: [],   // Bundle-Events: {id, name, prod, created, cards:{key:{q,t}}, merged}
   extraDecks: [],
   settings: {
     currency:'EUR', dispLang:'de', priceBasis:'trend',
     scanLang:'auto', defaultLang:'de', confirm:2, sound:true, vibrate:true, rotation:'auto', foil:false, frame:'m'
   },
-  ui: { assist:null, tab:'collection', mode:'owned', q:'', inks:[], set:'', rarity:'', type:'', lang:'', foil:'', sort:'value', limit:240, deck:null }
+  ui: { bundle:null, assist:null, tab:'collection', mode:'owned', q:'', inks:[], set:'', rarity:'', type:'', lang:'', foil:'', sort:'value', limit:240, deck:null }
 };
 
 /* ---------- Hilfsfunktionen ---------- */
@@ -112,7 +113,7 @@ let saveTimer = null;
 function persist(){ clearTimeout(saveTimer); saveTimer = setTimeout(saveNow, 250); if(window.scheduleAutoBackup) window.scheduleAutoBackup(); }
 async function saveNow(){
   clearTimeout(saveTimer);
-  const data = {coll:S.coll, decks:S.decks, settings:S.settings, extraDecks:S.extraDecks};
+  const data = {coll:S.coll, decks:S.decks, bundles:S.bundles, settings:S.settings, extraDecks:S.extraDecks};
   try{ localStorage.setItem('fx-user', JSON.stringify(data)); }catch(e){}
   try{ await DB.set('user', data); }catch(e){}
 }
@@ -120,7 +121,7 @@ async function loadUser(){
   let u = await DB.get('user');
   if(!u){ try{ u = JSON.parse(localStorage.getItem('fx-user') || 'null'); }catch(e){ u = null; } }
   if(u){
-    S.coll = u.coll || {}; S.decks = u.decks || []; S.extraDecks = u.extraDecks || [];
+    S.coll = u.coll || {}; S.decks = u.decks || []; S.bundles = u.bundles || []; S.extraDecks = u.extraDecks || [];
     Object.assign(S.settings, u.settings || {});
   }
 }
@@ -352,3 +353,25 @@ function terms(){
 }
 function kwDe(k){ return terms().kw[kwBase(k)] || kwBase(k); }
 function subDe(k){ return terms().sub[k] || k; }
+
+/* ---------- Bundle-Events ---------- */
+function bundleById(id){ return S.bundles.find(b => b.id === id); }
+function bundleEntries(b){
+  const out = [];
+  for(const [k, e] of Object.entries(b.cards || {})){ const [id, lang, f] = k.split('|'); const c = S.byId.get(+id) || S.byId.get(id); if(c) out.push({c, lang, foil: f === '1', q: e.q, t: e.t || 0, k}); }
+  return out;
+}
+function bundleAdd(b, id, lang, foil, n=1){
+  const k = ckey(id, lang, foil), e = b.cards[k] || {q:0, t:Date.now()};
+  e.q += n; if(n > 0) e.t = Date.now();
+  if(e.q <= 0) delete b.cards[k]; else b.cards[k] = e;
+  if(b.merged) addCard(id, lang, foil, n);   // schon übernommen → Sammlung mitführen
+  persist();
+  return e.q > 0 ? e.q : 0;
+}
+function bundleByKey(b){ const m = new Map(); for(const e of bundleEntries(b)){ const k = gkey(e.c); m.set(k, (m.get(k) || 0) + e.q); } return m; }
+function bundleStats(b){
+  let total = 0, value = 0; const uniq = new Set(); let top = null, topV = 0;
+  for(const e of bundleEntries(b)){ total += e.q; uniq.add(gkey(e.c)); const p = priceEUR(e.c, e.foil) || 0; value += p * e.q; if(p > topV){ topV = p; top = e; } }
+  return {total, unique: uniq.size, value, top, topV};
+}

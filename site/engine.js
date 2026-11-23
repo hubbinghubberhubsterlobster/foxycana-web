@@ -65,6 +65,8 @@ const ENGINE = (() => {
   }
 
   function preferPrinting(cards){
+    // Beim Scannen in ein Bundle: Drucke aus dem Set des Bundles zuerst
+    if(window.SCAN_SET){ const inSet = cards.filter(c => c.s === window.SCAN_SET); if(inSet.length) cards = inSet; }
     return [...cards].sort((a, b) => {
       const sa = SPECIAL_RAR.has(a.r) ? 1 : 0, sb = SPECIAL_RAR.has(b.r) ? 1 : 0;
       if(sa !== sb) return sa - sb;

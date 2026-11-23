@@ -24,7 +24,7 @@ const ASSIST = (() => {
 
 
   const st = {style:'auto', inks:[], format:'core', mode:'owned', prefs:{}, wish:'', pins:[], wishInfo:null,
-    metaPick:null, results:null, sel:0, title:'', best:null, bestKey:''};
+    metaPick:null, results:null, sel:0, title:'', best:null, bestKey:'', pool:null, size:60};
   let META = null, POWER = null, GROUPS = null;
 
   function setLegal(code, fmt){
@@ -90,10 +90,16 @@ const ASSIST = (() => {
   function refreshOwned(){
     for(const g of GROUPS.values()){
       g.owned = 0; g.ownCard = null; let best = -1;
-      for(const c of g.cards){ const q = ownedQty(c.id); g.owned += q; if(q > best){ best = q; g.ownCard = q ? c : g.ownCard; } }
+      for(const c of g.cards){ const q = POOLQ ? (POOLQ.get(c.id) || 0) : ownedQty(c.id); g.owned += q; if(q > best){ best = q; g.ownCard = q ? c : g.ownCard; } }
     }
   }
-  function ensure(){ if(!POWER || !GROUPS) buildPower(); refreshOwned(); }
+  let POOLQ = null; // Karten-Anzahl im gewählten Bundle (Karten-ID → Anzahl)
+  function ensure(){
+    if(!POWER || !GROUPS) buildPower();
+    const b = st.pool ? bundleById(st.pool) : null;
+    POOLQ = b ? (() => { const m = new Map(); for(const e of bundleEntries(b)) m.set(e.c.id, (m.get(e.c.id) || 0) + e.q); return m; })() : null;
+    refreshOwned();
+  }
 
 
   /* ---------- Wünsche: Schlüsselwörter, Kartentypen, Gruppen, Effekte ---------- */
@@ -197,8 +203,8 @@ const ASSIST = (() => {
     return s;
   }
   function buildDeck(pair, opt){
-    const owned = opt.mode === 'owned';
-    const target = STYLES[opt.style].curve;
+    const owned = opt.mode === 'owned', N = opt.size || 60, INKMIN = Math.round(N * 0.73);
+    const target = STYLES[opt.style].curve.map(x => x * N / 60);
     const pool = [];
     for(const g of GROUPS.values()){
       const inks = inkList(g.rep); if(!inks.length || !inks.every(k => pair.includes(k))) continue;
@@ -216,18 +222,18 @@ const ASSIST = (() => {
     const lim = p => owned && !(opt.pins && opt.pins.includes(p.g.key)) ? Math.min(p.max, p.g.owned) : p.max;
     for(const slack of [1.0, 1.35]){
       for(const p of pool){
-        if(count >= 60) break;
+        if(count >= N) break;
         const have = (deck.get(p.g.key) || {n:0}).n, L = lim(p);
-        const take = Math.min(L - have, room(p, slack), 60 - count);
+        const take = Math.min(L - have, room(p, slack), N - count);
         if(have === 0 && take < 2 && L >= 2 && slack === 1.0) continue;
         if(take > 0 && p.sc > 0.25) add(p, take);
       }
     }
-    if(count < 60) for(const p of pool){ if(count >= 60) break; const have = (deck.get(p.g.key) || {n:0}).n; add(p, Math.min(lim(p) - have, 60 - count)); }
-    if(count < 60) for(const p of pool){ if(count >= 60) break; if(p.sc < -0.2) continue; const have = (deck.get(p.g.key) || {n:0}).n; add(p, Math.min(p.max - have, 60 - count)); }
+    if(count < N) for(const p of pool){ if(count >= N) break; const have = (deck.get(p.g.key) || {n:0}).n; add(p, Math.min(lim(p) - have, N - count)); }
+    if(count < N && !POOLQ) for(const p of pool){ if(count >= N) break; if(p.sc < -0.2) continue; const have = (deck.get(p.g.key) || {n:0}).n; add(p, Math.min(p.max - have, N - count)); }
     let ink = 0; for(const x of deck.values()) if(x.p.g.rep.ink) ink += x.n;
     let guard = 0;
-    while(ink < 44 && guard++ < 40){
+    while(ink < INKMIN && guard++ < 40){
       const weak = [...deck.values()].filter(x => !x.p.g.rep.ink && !(opt.pins && opt.pins.includes(x.p.g.key))).sort((a, z) => a.p.sc - z.p.sc)[0];
       const repl = pool.find(p => p.g.rep.ink && (deck.get(p.g.key) || {n:0}).n < (owned && guard < 20 ? Math.min(p.max, p.g.owned) : p.max));
       if(!weak || !repl) break;
@@ -242,19 +248,19 @@ const ASSIST = (() => {
     const weakest = lines.length ? Math.min(...lines.map(x => x.sc)) : 0;
     const upgrades = pool.filter(p => p.sc > weakest + 0.05 && (deck.get(p.g.key) || {n:0}).n < p.max && p.g.owned < p.max)
       .slice(0, 10).map(p => ({g:p.g, sc:p.sc}));
-    return {pair, lines, total, ownedCopies, quality, missCost, ink, upgrades, opt};
+    return {pair, lines, total, ownedCopies, quality, missCost, ink, upgrades: POOLQ ? [] : upgrades, opt, size: N};
   }
-  function rank(r, mode){ return mode === 'owned' ? r.quality * 0.6 + (r.ownedCopies / 60) * 0.4 : r.quality; }
+  function rank(r, mode){ return mode === 'owned' ? r.quality * 0.6 + (r.ownedCopies / (r.size || 60)) * 0.4 : r.quality; }
   function runWith(opt, inks, n){
     ensure();
     let pairs = PAIRS;
     if(inks.length === 2) pairs = [inks];
     else if(inks.length === 1) pairs = PAIRS.filter(p => p.includes(inks[0]));
-    const res = pairs.map(p => buildDeck(p, opt)).filter(r => r.total >= 40);
+    const res = pairs.map(p => buildDeck(p, opt)).filter(r => r.total >= Math.min(40, (opt.size || 60) * 0.75));
     res.sort((a, b) => rank(b, opt.mode) - rank(a, opt.mode));
     return res.slice(0, n);
   }
-  function asDeck(r){ const d = {cards:{}}; for(const x of r.lines){ const c = x.g.ownCard || x.g.rep; d.cards[c.id] = (d.cards[c.id] || 0) + x.n; } return d; }
+  function asDeck(r){ const d = {cards:{}, size: r.size || 60, pool: st.pool || undefined}; for(const x of r.lines){ const c = x.g.ownCard || x.g.rep; d.cards[c.id] = (d.cards[c.id] || 0) + x.n; } return d; }
 
   /* ---------- Deck analysieren: Eigenschaften & Spielanleitung ---------- */
   function analyze(cards){ // cards: [{c, n}]
@@ -361,7 +367,7 @@ const ASSIST = (() => {
     if(best && best.fit === 1) metaS = Math.min(1, (best.a.wr ?? 50) / 100 * 0.7 + Math.min(best.a.share, 25) / 25 * 0.3);
     else if(best) metaS = 0.4;
     let score = 100 * (0.75 * quality + 0.25 * metaS);
-    if(n < 60) score -= (60 - n) * 0.5;
+    const want = d.size || (d.pool ? 40 : 60); if(n < want) score -= (want - n) * 0.5;
     if(illegal) score -= illegal * 0.5;
     if(inks.size > 2) score -= 15;
     score = Math.max(0, Math.round(score));
@@ -376,7 +382,7 @@ const ASSIST = (() => {
   const TC = {S:'#F5D58E', A:'#3CCB7F', B:'#1C8FD6', C:'#9A9CB8', D:'#FF6B6B'};
   function chips(name, opts, cur){ return `<div class="chips" style="flex-wrap:wrap">${opts.map(([v, l]) => `<button class="chip ${cur === v ? 'on' : ''}" data-act="as-set" data-k="${name}" data-v="${esc(v)}">${esc(l)}</button>`).join('')}</div>`; }
   function stars(q){ const n = Math.max(1, Math.min(5, Math.round(q * 6.5 - 0.5))); return '★'.repeat(n) + '☆'.repeat(5 - n); }
-  function collKey(){ return Object.values(S.coll).reduce((s, e) => s + e.q, 0) + ':' + Object.keys(S.coll).length + ':' + Object.keys(S.prices).length; }
+  function collKey(){ return (st.pool || '') + ':' + st.size + ':' + (st.pool && bundleById(st.pool) ? bundleStats(bundleById(st.pool)).total : 0) + ':' + Object.values(S.coll).reduce((s, e) => s + e.q, 0) + ':' + Object.keys(S.coll).length + ':' + Object.keys(S.prices).length; }
   function resultCard(r, i, act){
     const d = asDeck(r), rt = rateDeck(d), a = analyze(r.lines.map(x => ({c:x.g.rep, n:x.n})));
     return `<button class="deck-item" data-act="${act}" data-i="${i}" style="align-items:flex-start">
@@ -384,21 +390,23 @@ const ASSIST = (() => {
       <div class="grow"><div class="row" style="gap:6px">${inkDot(r.pair[0])}${inkDot(r.pair[1])}<b>${esc(pairLabel(r.pair))}</b></div>
         ${rt.arche ? `<div class="tiny" style="color:var(--gold2);margin-top:2px">≈ Meta-Deck „${esc(rt.arche.name)}“</div>` : ''}
         <div class="row wrap" style="gap:4px;margin-top:6px">${features(a).map(f => `<span class="tag">${esc(f)}</span>`).join('')}</div>
-        <div class="tiny muted" style="margin-top:6px">${r.ownedCopies}/60 Karten hast du${r.total - r.ownedCopies ? ` · <span class="miss">${r.total - r.ownedCopies} fehlen (ca. ${money(r.missCost)})</span>` : ' · <span style="color:var(--good)">komplett spielbar ✓</span>'}</div></div><span class="muted">›</span></button>`;
+        <div class="tiny muted" style="margin-top:6px">${r.ownedCopies}/${r.size || 60} Karten ${st.pool ? 'aus dem Bundle' : 'hast du'}${r.total - r.ownedCopies ? ` · <span class="miss">${r.total - r.ownedCopies} fehlen (ca. ${money(r.missCost)})</span>` : ' · <span style="color:var(--good)">komplett spielbar ✓</span>'}</div></div><span class="muted">›</span></button>`;
   }
   function render(){
     if(!S.cards.length) return;
     if(S.ui.assist === 'results') return renderResults();
     if(S.ui.assist === 'deck') return renderDeckView();
     const m = META;
-    view.innerHTML = `<div class="row">${backBtn()}<h1 class="grow">✨ Deck-Assistent</h1></div>
-
-      <div class="card"><div class="row between"><b>🏆 Gerade stark in Turnieren</b><span class="tiny muted">${m ? (m.live ? 'aktuell · ' : 'Stand ') + fmtDate(m.date) : 'lädt …'}</span></div>
+    const PB = st.pool ? bundleById(st.pool) : null;
+    view.innerHTML = `<div class="row">${backBtn()}<h1 class="grow">✨ ${PB ? 'Decks aus dem Bundle' : 'Deck-Assistent'}</h1></div>
+      ${PB ? `<div class="card" style="margin-bottom:12px">🎁 Es werden <b>nur Karten aus „${esc(PB.name)}“</b> benutzt (${bundleStats(PB).total} Karten).
+        <label class="lbl">Deckgröße</label>${chips('size', [['40','40 Karten (Sealed)'],['60','60 Karten']], String(st.size))}</div>` : ''}
+      <div class="card" ${PB ? 'hidden' : ''}><div class="row between"><b>🏆 Gerade stark in Turnieren</b><span class="tiny muted">${m ? (m.live ? 'aktuell · ' : 'Stand ') + fmtDate(m.date) : 'lädt …'}</span></div>
         <p class="tiny muted" style="margin:4px 0 6px">Das sind <b>keine Empfehlungen für dich</b>, sondern die Decks, die Turnierspieler gerade am meisten spielen (inkdecks.com, Format ${st.format === 'core' ? 'Core' : 'Infinity'}). <b>Anteil</b> = wie oft gespielt, <b>Siege</b> = wie oft gewonnen. Rechts siehst du, wie viele der 60 Karten du dafür schon hast. Tippe ein Deck an, um es zu sehen.</p>
         <div id="as-meta">${m ? metaList(m) : '<div class="loader" style="width:24px;height:24px;border-width:3px;margin:10px auto"></div>'}</div></div>
 
-      <h2>✨ Dein bestes Deck</h2>
-      <p class="tiny muted" style="margin-top:-6px">Automatisch aus deiner Sammlung gebaut – die stärksten Decks, die du jetzt schon (fast) komplett spielen kannst.</p>
+      <h2>✨ ${PB ? 'Die besten Decks aus dem Bundle' : 'Dein bestes Deck'}</h2>
+      <p class="tiny muted" style="margin-top:-6px">${PB ? 'Automatisch nur aus den Bundle-Karten gebaut.' : 'Automatisch aus deiner Sammlung gebaut – die stärksten Decks, die du jetzt schon (fast) komplett spielen kannst.'}</p>
       <div id="as-best">${st.best && st.bestKey === collKey() ? st.best.map((r, i) => resultCard(r, i, 'as-best')).join('') : '<div class="boot" style="min-height:90px"><div class="loader" style="width:28px;height:28px"></div><span class="small muted">Rechne …</span></div>'}</div>
 
       <h2>🛠️ Selbst bauen</h2>
@@ -412,12 +420,13 @@ const ASSIST = (() => {
         <textarea class="field" id="as-wish" style="min-height:90px;font-family:inherit" placeholder="z. B.:&#10;Elsa – Schneekönigin&#10;viele Lieder&#10;keine Gegenstände&#10;Stitch">${esc(st.wish)}</textarea>
         <div class="tiny muted" style="margin-top:4px">Eine Sache pro Zeile oder mit Komma. Kartennamen kommen auf jeden Fall rein. „viele …“/„muss …“ = vorgeben, „keine …“/„ohne …“ = vermeiden.</div>
         ${st.wishInfo ? `<div class="tiny" style="margin-top:6px">${st.wishInfo}</div>` : ''}
-        <label class="lbl">Karten</label>${chips('mode', [['owned','Nur meine Karten'],['best','Bestes Deck (mit Kauftipps)']], st.mode)}
-        <label class="lbl">Format</label>${chips('format', [['core','Core (aktuelle Sets)'],['infinity','Infinity (alle Sets)']], st.format)}
+        ${PB ? '' : `<label class="lbl">Karten</label>${chips('mode', [['owned','Nur meine Karten'],['best','Bestes Deck (mit Kauftipps)']], st.mode)}
+        <label class="lbl">Format</label>${chips('format', [['core','Core (aktuelle Sets)'],['infinity','Infinity (alle Sets)']], st.format)}`}
         <button class="btn block" style="margin-top:16px" data-act="as-run">Decks bauen</button>
       </div>
       <p class="tiny muted">So bewertet Foxycana Karten: Spielwerte und Fähigkeiten plus Nachfrage auf Cardmarket (gefragte Turnierkarten sind innerhalb ihrer Seltenheit teurer). Das ist eine Einschätzung, keine Garantie.</p>`;
     const w = $('#as-wish'); if(w) w.oninput = () => { st.wish = w.value; };
+    if(PB){ if(!(st.best && st.bestKey === collKey())) setTimeout(computeBest, 60); return; }
     if(m && !m.list.length) $('#as-meta').innerHTML = '<div class="tiny muted">Keine Meta-Daten verfügbar.</div>';
     if(!m) loadMeta().then(() => { if(S.ui.assist === 'wizard') render(); });
     else if(!st.metaHave || st.metaHaveKey !== collKey() + st.format) setTimeout(computeMetaHave, 30);
@@ -425,7 +434,7 @@ const ASSIST = (() => {
   }
   function computeBest(){
     if(S.ui.assist !== 'wizard') return;
-    st.best = runWith({style:'auto', prefs:{}, pins:[], format: st.format, mode:'owned'}, [], 3);
+    st.best = runWith({style:'auto', prefs:{}, pins:[], format: st.pool ? 'infinity' : st.format, mode:'owned', size: st.size}, [], 3);
     st.bestKey = collKey();
     const el = $('#as-best'); if(el) el.innerHTML = st.best.length ? st.best.map((r, i) => resultCard(r, i, 'as-best')).join('') : '<div class="empty">Noch zu wenige Karten für ein Deck – scanne mehr Karten oder füge Fertigdecks hinzu.</div>';
   }
@@ -465,7 +474,7 @@ const ASSIST = (() => {
       <details class="guide-box"><summary>📖 So spielst du dieses Deck</summary>${guide(cards)}</details>
       ${st.metaPick ? `<div class="seg" style="margin-bottom:6px"><button class="${st.mode === 'best' ? 'on' : ''}" data-act="as-alt" data-m="best">Meta-Version</button><button class="${st.mode === 'owned' ? 'on' : ''}" data-act="as-alt" data-m="owned">Mit meinen Karten</button></div>
       <p class="tiny muted" style="margin:0 0 10px">${st.mode === 'best' ? `So sieht das Deck in Bestform aus – davon hast du <b>${r.ownedCopies}/60</b> Karten. Die fehlenden stehen unten mit Preis.` : `Deine spielbare Version: Fehlende Meta-Karten wurden durch deine eigenen Karten in diesen Farben ersetzt – deshalb ist das Deck vollständig, aber nicht mehr ganz das Meta-Deck.`} Foxycana baut das Deck aus Kartenstärke und Thema nach, es ist keine exakte Turnier-Liste.</p>` : ''}
-      <div class="row" style="gap:8px"><button class="btn grow" data-act="as-save">Als Deck speichern</button>${st.metaPick ? '' : st.mode === 'owned' ? `<button class="btn ghost" data-act="as-alt" data-m="best">Mit Kauftipps</button>` : `<button class="btn ghost" data-act="as-alt" data-m="owned">Nur meine</button>`}</div>
+      <div class="row" style="gap:8px"><button class="btn grow" data-act="as-save">Als Deck speichern</button>${st.metaPick || st.pool ? '' : st.mode === 'owned' ? `<button class="btn ghost" data-act="as-alt" data-m="best">Mit Kauftipps</button>` : `<button class="btn ghost" data-act="as-alt" data-m="owned">Nur meine</button>`}</div>
       <div class="card" style="margin-top:12px"><b class="small">Kostenkurve</b><div class="curve">${curve.map((n, i) => `<div><span>${n || ''}</span><i style="height:${Math.round(n / mx * 56)}px"></i>${i === 8 ? '8+' : i}</div>`).join('')}</div></div>
       <h3>Deckliste</h3>${lines.map(x => `<div class="deck-line"><span class="cost">${x.g.rep.ct ?? '–'}</span><img src="${esc(cThumb(x.g.ownCard || x.g.rep))}" loading="lazy" data-act="card" data-id="${(x.g.ownCard || x.g.rep).id}">
         <div class="grow" data-act="card" data-id="${(x.g.ownCard || x.g.rep).id}"><div class="ell"><b>${x.n}× ${esc(cName(x.g.rep))}</b></div><div class="tiny muted ell">${esc(cVer(x.g.rep))}${x.miss ? ` <span class="miss">· ${x.miss} fehlt (${money((x.g.price || 0) * x.miss)})</span>` : ''}</div></div>
@@ -475,8 +484,8 @@ const ASSIST = (() => {
 
   /* ---------- Aktionen ---------- */
   function busy(text){ view.innerHTML = `<div class="boot" style="min-height:50vh"><div class="loader"></div>${esc(text)}</div>`; }
-  A['assist-open'] = () => { go({tab:'decks', deck:null, assist:'wizard'}); if(!META) loadMeta().then(() => { if(S.ui.assist === 'wizard') render(); }); };
-  A['as-set'] = el => { st[el.dataset.k] = el.dataset.v; if(el.dataset.k === 'format'){ META = null; st.best = null; st.metaHave = null; } render(); };
+  A['assist-open'] = () => { if(st.pool){ st.pool = null; st.size = 60; st.best = null; st.mode = 'owned'; } go({tab:'decks', deck:null, assist:'wizard'}); if(!META) loadMeta().then(() => { if(S.ui.assist === 'wizard') render(); }); };
+  A['as-set'] = el => { st[el.dataset.k] = el.dataset.k === 'size' ? +el.dataset.v : el.dataset.v; if(el.dataset.k === 'size') st.best = null; if(el.dataset.k === 'format'){ META = null; st.best = null; st.metaHave = null; } render(); };
   A['as-ink'] = el => { const k = el.dataset.ink; st.inks = st.inks.includes(k) ? st.inks.filter(x => x !== k) : [...st.inks, k].slice(-2); render(); };
   A['as-pref'] = el => { const k = el.dataset.k, order = [undefined, 'rec', 'req', 'avoid']; const nx = order[(order.indexOf(st.prefs[k]) + 1) % 4]; if(nx) st.prefs[k] = nx; else delete st.prefs[k]; const y = window.scrollY; render(); window.scrollTo(0, y); };
   A['as-run'] = () => {
@@ -491,7 +500,7 @@ const ASSIST = (() => {
     const parts = [STYLES[st.style].de, ...Object.entries(prefs).filter(([, m]) => m !== 'avoid').map(([k]) => prefLabel(k))];
     st.title = parts.join(' · ');
     busy('Baue Decks aus deinen Karten …');
-    setTimeout(() => { st.results = runWith({style: st.style, prefs, pins: wish.pins, format: st.format, mode: st.mode}, st.inks, st.inks.length === 2 ? 1 : 3); st.sel = 0; go({assist:'results'}); }, 30);
+    setTimeout(() => { st.results = runWith({style: st.style, prefs, pins: wish.pins, format: st.pool ? 'infinity' : st.format, mode: st.pool ? 'owned' : st.mode, size: st.size}, st.inks, st.inks.length === 2 ? 1 : 3); st.sel = 0; go({assist:'results'}); }, 30);
   };
   A['as-best'] = el => { st.results = st.best; st.sel = +el.dataset.i; st.metaPick = null; st.title = 'Dein bestes Deck'; st.mode = 'owned'; go({assist:'deck'}); };
   A['as-meta'] = el => {
@@ -511,11 +520,13 @@ const ASSIST = (() => {
     const r = st.results[st.sel];
     const def = (st.metaPick ? metaNameDe(st.metaPick.name) + ' ' : '') + pairLabel(r.pair).replace(' & ', '/');
     const name = await promptText('Deck speichern', def); if(!name) return;
-    const d = {id:'d' + Date.now(), name, cards: asDeck(r).cards, src:'assistant', created: Date.now()};
-    S.decks.unshift(d); persist(); toast('Deck gespeichert ✓ – freie Karten wurden zugeordnet');
-    go({tab:'decks', assist:null, deck: d.id});
+    const d = {id:'d' + Date.now(), name, cards: asDeck(r).cards, src:'assistant', created: Date.now(), size: r.size || 60};
+    if(st.pool) d.pool = st.pool;
+    S.decks.unshift(d); persist(); toast('Deck gespeichert ✓' + (st.pool ? '' : ' – freie Karten wurden zugeordnet'));
+    go({tab: st.pool ? 'bundles' : 'decks', assist:null, deck: d.id});
   };
 
-  return {render, loadMeta, rateDeck, guide, analyze, features, metaLoaded: () => !!META, state: st, reset(){ POWER = null; GROUPS = null; st.best = null; st.metaHave = null; }};
+  function forPool(id){ st.pool = id; st.size = 40; st.mode = 'owned'; st.results = null; st.best = null; st.inks = []; st.metaPick = null; }
+  return {forPool, render, loadMeta, rateDeck, guide, analyze, features, metaLoaded: () => !!META, state: st, reset(){ POWER = null; GROUPS = null; st.best = null; st.metaHave = null; }};
 })();
 window.ASSIST = ASSIST;

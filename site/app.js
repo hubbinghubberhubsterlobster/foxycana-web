@@ -52,13 +52,13 @@ function stepper(attrs, q){
 /* ---------- Navigation ---------- */
 /* Verlauf: Zurück-Knopf und Android-Zurückwischen gehen zur vorherigen Ansicht */
 const NAV = [];
-function snap(){ const u = S.ui; return {tab:u.tab, deck:u.deck, assist:u.assist, mode:u.mode, set:u.set, sort:u.sort, q:u.q, inks:[...u.inks], rarity:u.rarity, type:u.type, lang:u.lang, foil:u.foil, y: window.scrollY}; }
+function snap(){ const u = S.ui; return {tab:u.tab, deck:u.deck, assist:u.assist, bundle:u.bundle, mode:u.mode, set:u.set, sort:u.sort, q:u.q, inks:[...u.inks], rarity:u.rarity, type:u.type, lang:u.lang, foil:u.foil, y: window.scrollY}; }
 function go(ch){ NAV.push(snap()); if(NAV.length > 50) NAV.shift(); Object.assign(S.ui, ch); S.ui.limit = 240; render(); window.scrollTo(0, 0); }
 function goBack(){ if(!NAV.length) return false; const st = NAV.pop(); const y = st.y; delete st.y; Object.assign(S.ui, st); render(); setTimeout(() => window.scrollTo(0, y || 0), 0); return true; }
 function backBtn(){ return NAV.length ? `<button class="round back" data-act="back" aria-label="Zurück">‹</button>` : ''; }
 A.back = () => { if(!goBack()) go({tab:'collection', deck:null, assist:null}); };
 // Hauptseiten (unten) haben keinen Verlauf: dort gibt es kein Zurück
-A.tab = el => { const t = el.dataset.tab; NAV.length = 0; if(t === S.ui.tab && !S.ui.deck && !S.ui.assist && !(t === 'collection' && S.ui.set)){ window.scrollTo(0, 0); render(); return; } Object.assign(S.ui, {tab:t, deck:null, assist:null, limit:240}); if(t === 'collection') S.ui.set = ''; render(); window.scrollTo(0, 0); };
+A.tab = el => { const t = el.dataset.tab; NAV.length = 0; if(t === S.ui.tab && !S.ui.deck && !S.ui.assist && !S.ui.bundle && !(t === 'collection' && S.ui.set)){ window.scrollTo(0, 0); render(); return; } Object.assign(S.ui, {tab:t, deck:null, assist:null, bundle:null, limit:240}); if(t === 'collection') S.ui.set = ''; render(); window.scrollTo(0, 0); };
 function render(){
   if(SEL && S.ui.tab !== 'collection') selEnd();
   $$('#nav .nav-btn').forEach(b => b.classList.toggle('on', b.dataset.tab === S.ui.tab));
@@ -67,6 +67,7 @@ function render(){
   if(t === 'collection') renderCollection();
   else if(t === 'sets') renderSets();
   else if(t === 'decks') S.ui.assist ? ASSIST.render() : S.ui.deck ? renderDeck() : renderDecks();
+  else if(t === 'bundles') S.ui.assist ? ASSIST.render() : S.ui.deck ? renderDeck() : S.ui.bundle ? renderBundle() : renderBundles();
   else renderMore();
 }
 
@@ -236,7 +237,7 @@ A['sel-add'] = async () => {
 A['sel-deck'] = () => {
   openSheet(`<h2>${SEL.size} Karten zu Deck hinzufügen</h2>
     <label class="lbl">Anzahl pro Karte</label><div class="seg" id="sd-n"><button class="on" data-act="sd-n" data-n="1">Je 1</button><button data-act="sd-n" data-n="own">So viele ich habe (max. 4)</button><button data-act="sd-n" data-n="4">Je 4</button></div>
-    <div class="list">${S.decks.map(d => `<button class="item" style="width:100%;text-align:left" data-act="sd-pick" data-id="${d.id}"><div class="deck-inks">${inkColDots(deckStats(d).inks)}</div><div class="grow"><b>${esc(d.name)}</b><div class="tiny muted">${deckStats(d).count} Karten</div></div><span class="muted">›</span></button>`).join('')}
+    <div class="list">${S.decks.filter(d => !d.pool).map(d => `<button class="item" style="width:100%;text-align:left" data-act="sd-pick" data-id="${d.id}"><div class="deck-inks">${inkColDots(deckStats(d).inks)}</div><div class="grow"><b>${esc(d.name)}</b><div class="tiny muted">${deckStats(d).count} Karten</div></div><span class="muted">›</span></button>`).join('')}
       <button class="item" style="width:100%;text-align:left" data-act="sd-pick" data-id="new"><span style="font-size:20px">＋</span><div class="grow"><b>Neues Deck</b></div></button></div>`);
   window.__sdN = '1';
 };
@@ -348,12 +349,9 @@ A['search-pick'] = el => { const c = S.byId.get(+el.dataset.id || el.dataset.id)
 let ALLOC = null;
 function deckNeeds(d){ const m = new Map(); for(const [id, n] of Object.entries(d.cards || {})){ const c = S.byId.get(+id) || S.byId.get(id); if(!c) continue; const k = gkey(c); m.set(k, (m.get(k) || 0) + n); } return m; }
 function ownedByKey(){ const m = new Map(); for(const e of entries()){ const k = gkey(e.c); m.set(k, (m.get(k) || 0) + e.q); } return m; }
-function syncAlloc(){
-  const own = ownedByKey(), used = new Map();
-  const before = JSON.stringify(S.decks.map(d => d.alloc || {}));
-  const decks = [...S.decks].sort((a, b) => (a.created || 0) - (b.created || 0));
-  const needs = new Map(decks.map(d => [d.id, deckNeeds(d)]));
-  const free = k => Math.max(0, (own.get(k) || 0) - (used.get(k) || 0));
+/* Bundle-Decks (d.pool) nutzen nur die Karten ihres Bundles, alle anderen die Sammlung. */
+function allocGroup(decks, own, needs){
+  const used = new Map(), free = k => Math.max(0, (own.get(k) || 0) - (used.get(k) || 0));
   for(const d of decks){
     const al = d.alloc || (d.alloc = {}), need = needs.get(d.id);
     for(const k of Object.keys(al)){ const n = Math.min(al[k], need.get(k) || 0, free(k)); if(n > 0){ al[k] = n; used.set(k, (used.get(k) || 0) + n); } else delete al[k]; }
@@ -364,7 +362,18 @@ function syncAlloc(){
   }
   const holders = new Map();
   for(const d of decks) for(const [k, n] of Object.entries(d.alloc)){ if(!holders.has(k)) holders.set(k, []); holders.get(k).push({d, n}); }
-  ALLOC = {own, used, holders, needs};
+  return {own, used, holders};
+}
+function syncAlloc(){
+  const before = JSON.stringify(S.decks.map(d => d.alloc || {}));
+  const decks = [...S.decks].sort((a, b) => (a.created || 0) - (b.created || 0));
+  const needs = new Map(decks.map(d => [d.id, deckNeeds(d)]));
+  const pools = new Map();
+  for(const d of decks){ const p = d.pool && bundleById(d.pool) ? d.pool : ''; if(!pools.has(p)) pools.set(p, []); pools.get(p).push(d); }
+  const groups = new Map([['', allocGroup(pools.get('') || [], ownedByKey(), needs)]]);
+  for(const [p, ds] of pools) if(p) groups.set(p, allocGroup(ds, bundleByKey(bundleById(p)), needs));
+  const main = groups.get('');
+  ALLOC = {own: main.own, used: main.used, holders: main.holders, needs, groups, G: d => groups.get(d && d.pool && groups.has(d.pool) ? d.pool : '')};
   if(JSON.stringify(S.decks.map(d => d.alloc || {})) !== before) persist();
   return ALLOC;
 }
@@ -378,14 +387,14 @@ function deckStats(d){
     if(c.ink) inkable += n; curve[Math.min(8, c.ct || 0)] += n; types[c.t] = (types[c.t] || 0) + n;
   }
   let missing = 0, inOther = 0, buy = 0, missingValue = 0;
-  const need = AL.needs.get(d.id) || deckNeeds(d);
+  const need = AL.needs.get(d.id) || deckNeeds(d), GR = (AL.G && AL.G(d)) || AL;
   for(const [k, n] of need){
     const a = (d.alloc && d.alloc[k]) || 0; if(a >= n) continue;
     missing += n - a;
-    const notOwned = Math.max(0, n - (AL.own.get(k) || 0));
+    const notOwned = Math.max(0, n - (GR.own.get(k) || 0));
     buy += notOwned; inOther += n - a - notOwned;
   }
-  for(const [id, n] of Object.entries(d.cards)){ const c = S.byId.get(+id) || S.byId.get(id); if(!c) continue; const k = gkey(c); const notOwned = Math.max(0, (need.get(k) || 0) - (AL.own.get(k) || 0)); if(notOwned) missingValue += (priceEUR(c, false) || 0) * Math.min(n, notOwned); }
+  for(const [id, n] of Object.entries(d.cards)){ const c = S.byId.get(+id) || S.byId.get(id); if(!c) continue; const k = gkey(c); const notOwned = Math.max(0, (need.get(k) || 0) - (GR.own.get(k) || 0)); if(notOwned) missingValue += (priceEUR(c, false) || 0) * Math.min(n, notOwned); }
   return {count, value, missing, inOther, buy, missingValue, inkable, inks:[...inks], curve, types};
 }
 function inkColDots(inks){ return inks.map(k => `<i class="dot" style="background:${(INKS[k]||{}).c}"></i>`).join(''); }
@@ -393,7 +402,7 @@ const TIER_COL = {S:'#F5D58E', A:'#3CCB7F', B:'#1C8FD6', C:'#9A9CB8', D:'#FF6B6B
 function tierBadge(r){ return r ? `<div style="text-align:center;min-width:44px"><div style="font-weight:800;font-size:20px;color:${TIER_COL[r.tier]}">${r.tier}</div><div class="tiny muted">${r.score}</div></div>` : '<div style="min-width:44px"></div>'; }
 function renderDecks(){
   syncAlloc();
-  const rated = S.decks.map(d => ({d, r: window.ASSIST ? ASSIST.rateDeck(d) : null})).sort((a, b) => (b.r ? b.r.score : -1) - (a.r ? a.r.score : -1));
+  const rated = S.decks.filter(d => !d.pool).map(d => ({d, r: window.ASSIST ? ASSIST.rateDeck(d) : null})).sort((a, b) => (b.r ? b.r.score : -1) - (a.r ? a.r.score : -1));
   if(window.ASSIST && !ASSIST.metaLoaded() && !renderDecks.loading){ renderDecks.loading = true; ASSIST.loadMeta().then(() => { if(S.ui.tab === 'decks' && !S.ui.deck && !S.ui.assist) renderDecks(); }); }
   const list = rated.map(({d, r}, i) => { const st = deckStats(d); return `<button class="deck-item" data-act="deck-open" data-id="${d.id}">
       ${tierBadge(r)}
@@ -410,7 +419,7 @@ function renderDecks(){
     <button class="btn ghost block" data-act="deck-import" style="margin-top:6px">Deckliste einfügen (Text)</button>
 `;
 }
-A['deck-open'] = el => go({tab:'decks', deck: el.dataset.id, assist:null});
+A['deck-open'] = el => { const d = S.decks.find(x => x.id === el.dataset.id); go({tab: d && d.pool ? 'bundles' : 'decks', deck: el.dataset.id, assist:null}); };
 A['deck-back'] = () => { if(!goBack()){ S.ui.deck = null; render(); } };
 A['deck-new'] = async () => {
   const name = await promptText('Neues Deck', '', 'z. B. Bernstein/Stahl Aggro'); if(!name) return;
@@ -437,16 +446,17 @@ function renderDeck(){
     ${(() => { const r = window.ASSIST ? ASSIST.rateDeck(d) : null; if(!r) return ''; return `<div class="card row" style="margin-bottom:12px">${tierBadge(r)}<div class="grow"><b>Meta-Einschätzung: Stufe ${r.tier}</b>
       <div class="tiny muted">${r.arche ? `Entspricht <b>${esc(r.arche.name)}</b> (${esc(r.arche.inks.map(k => INKS[k].de).join(' & '))}) – ${r.arche.share}% der Turnierdecks, ${r.arche.wr ?? '–'}% Siege` : 'Kein bekannter Meta-Archetyp – eher ein eigenes Deck'}</div>
       <div class="tiny muted">Kartenstärke ${Math.round(r.quality * 100)}/100${r.illegal ? ` · <span style="color:var(--bad)">${r.illegal} Karten nicht Core-legal</span>` : ''} · Meta ${r.live ? 'live' : 'Stand'} ${fmtDate(r.metaDate)}</div></div></div>`; })()}
+    ${d.pool && bundleById(d.pool) ? `<div class="card small" style="margin-bottom:12px">🎁 Deck aus dem Bundle <b>${esc(bundleById(d.pool).name)}</b> – „fehlt“ heißt hier: nicht im Bundle.</div>` : ''}
     ${warn.length ? `<div class="warn" style="margin-bottom:12px">${warn.map(esc).join('<br>')}</div>` : ''}
     ${window.ASSIST && cards.length ? `<details class="guide-box"><summary>📖 So spielst du dieses Deck</summary>${ASSIST.guide(cards)}</details>` : ''}
     <div class="card"><b class="small">Kostenkurve</b><div class="curve">${st.curve.map((n, i) => `<div><span>${n || ''}</span><i style="height:${Math.round(n / maxC * 56)}px"></i>${i === 8 ? '8+' : i}</div>`).join('')}</div></div>
     <div class="row" style="gap:8px;margin:12px 0"><button class="btn grow" data-act="deck-add">+ Karten</button><button class="btn ghost" data-act="deck-menu">⋯</button></div>
     ${Object.entries(groups).map(([t, xs]) => `<h3>${esc(TYPE_DE[t] || t)} <span class="muted">(${xs.reduce((s, x) => s + x.n, 0)})</span></h3>` + xs.map(x => {
       const k = gkey(x.c), need = ALLOC.needs.get(d.id).get(k) || x.n, a = (d.alloc && d.alloc[k]) || 0, miss = Math.max(0, need - a);
-      const others = (ALLOC.holders.get(k) || []).filter(h => h.d.id !== d.id);
-      const notOwned = Math.max(0, need - (ALLOC.own.get(k) || 0));
+      const GR = ALLOC.G(d), others = (GR.holders.get(k) || []).filter(h => h.d.id !== d.id);
+      const notOwned = Math.max(0, need - (GR.own.get(k) || 0));
       const status = !miss ? '<span style="color:var(--good)">✓ im Deck</span>'
-        : `<span class="miss">${miss} fehlt</span>${notOwned ? ` <span class="tiny muted">· ${notOwned} nicht im Besitz (${money((priceEUR(x.c, false) || 0) * notOwned)})</span>` : ''}`
+        : `<span class="miss">${miss} fehlt</span>${notOwned ? ` <span class="tiny muted">· ${notOwned} ${d.pool ? 'nicht im Bundle' : 'nicht im Besitz'} (${money((priceEUR(x.c, false) || 0) * notOwned)})</span>` : ''}`
           + others.map(h => `<button class="chip mini" data-act="alloc-take" data-k="${esc(k)}" data-from="${h.d.id}">↩ aus „${esc(h.d.name)}“ holen (${h.n})</button>`).join('');
       return `<div class="deck-line" style="align-items:flex-start"><span class="cost">${x.c.ct ?? '–'}</span><img src="${esc(cThumb(x.c))}" loading="lazy" data-act="card" data-id="${x.c.id}">
         <div class="grow"><div class="ell" data-act="card" data-id="${x.c.id}"><b>${esc(cName(x.c))}</b> <span class="tiny muted">${esc(cVer(x.c))}</span></div><div class="tiny" style="display:flex;flex-wrap:wrap;gap:4px 8px;align-items:center;margin-top:2px">${status}</div></div>
@@ -663,7 +673,7 @@ A['csv-export'] = () => {
     rows.push([e.c.s, (e.c.n ?? '') + (e.c.v || ''), e.foil ? 'foil' : 'normal', e.q, e.lang.toUpperCase(), e.c.name.en, e.c.ver.en, e.c.r, (priceEUR(e.c, e.foil) || 0).toFixed(2)]);
   saveFile('foxycana-sammlung-' + stamp() + '.csv', 'text/csv', rows.map(r => r.map(csvCell).join(',')).join('\n'));
 };
-function backupJSON(){ return JSON.stringify({app:'foxycana', v:1, date:new Date().toISOString(), coll:S.coll, decks:S.decks, settings:S.settings}); }
+function backupJSON(){ return JSON.stringify({app:'foxycana', v:1, date:new Date().toISOString(), coll:S.coll, decks:S.decks, bundles:S.bundles, settings:S.settings}); }
 A['backup-export'] = () => saveFile('foxycana-backup-' + stamp() + '.json', 'application/json', backupJSON());
 
 /* Automatisches Backup: nach jeder Änderung (gebündelt) und beim Verlassen der App.
@@ -678,7 +688,7 @@ function autoBackup(force){
   clearTimeout(abTimer);
   if(!abDirty && !force) return;
   if(!NATIVE || !NATIVE.saveFileReplace || S.settings.autoBackup === 'off') return;
-  if(!Object.keys(S.coll).length && !S.decks.length) return; // niemals eine leere Sammlung sichern
+  if(!Object.keys(S.coll).length && !S.decks.length && !S.bundles.length) return; // niemals eine leere Sammlung sichern
   abDirty = false;
   const json = backupJSON();
   const r = NATIVE.saveFileReplace('foxycana-backup-aktuell.json', 'application/json', json);
@@ -700,7 +710,7 @@ A['backup-import'] = async () => {
   if(j.app !== 'foxycana' || !j.coll){ toast('Keine Foxycana-Backup-Datei'); return; }
   const ok = await ask('Backup laden?', 'Deine aktuelle Sammlung und Decks werden durch das Backup ersetzt.', [{l:'Abbrechen', v:false, c:'ghost'}, {l:'Ersetzen', v:true}]);
   if(!ok) return;
-  S.coll = j.coll; S.decks = j.decks || []; if(j.settings) Object.assign(S.settings, j.settings);
+  S.coll = j.coll; S.decks = j.decks || []; S.bundles = j.bundles || []; if(j.settings) Object.assign(S.settings, j.settings);
   await saveNow(); toast('Backup geladen ✓'); render();
 };
 A['coll-clear'] = async () => {
@@ -761,7 +771,11 @@ A['csv-import'] = async () => {
    ========================================================= */
 const ROTS = [0, 90, 270, 180];
 const SC = {on:false, paused:false, stream:null, busy:false, state:'search', last:null, lastN:0, lockSig:null, lastAdded:null, emptyRun:0, sawEmpty:true,
-  rot:0, goodRot:null, fail:0, session:[], torch:false, timer:null};
+  rot:0, goodRot:null, fail:0, session:[], torch:false, timer:null, target:null};
+
+/* Wohin gescannte Karten gehen: Sammlung (null) oder ein Bundle-Event */
+function scanTarget(){ return SC.target ? bundleById(SC.target) : null; }
+function putCard(item, n){ const b = item.target ? bundleById(item.target) : null; if(b) bundleAdd(b, item.c.id, item.lang, item.foil, n); else addCard(item.c.id, item.lang, item.foil, n); }
 const vid = $('#vid');
 
 function scanStatus(t, cls){ $('#scan-status').textContent = t; const f = $('#frame'); f.classList.toggle('ok', cls === 'ok'); f.classList.toggle('read', cls === 'read'); }
@@ -776,10 +790,14 @@ function scanOptsUI(){
   $('#frame').className = 'frame size-' + (s.frame || 'm');
   $('#btn-torch').classList.toggle('on', SC.torch);
   const v = SC.session.reduce((sum, x) => sum + (priceEUR(x.c, x.foil) || 0), 0);
-  $('#scan-sum').textContent = `${SC.session.length} ${SC.session.length === 1 ? 'Karte' : 'Karten'} · ${money(v)}`;
+  const b = scanTarget();
+  $('#scan-sum').textContent = (b ? '🎁 ' + b.name + ' · ' : '') + `${SC.session.length} ${SC.session.length === 1 ? 'Karte' : 'Karten'} · ${money(v)}`;
 }
-A['scan-open'] = async () => {
+A['scan-open'] = () => startScan(null);
+async function startScan(target){
   if(!S.cards.length){ toast('Kartendaten fehlen noch'); return; }
+  if(SC.target !== target){ SC.session = []; SC.target = target; }
+  const tb = scanTarget(); window.SCAN_SET = tb && tb.prod && tb.prod.set ? tb.prod.set : null;
   $('#scan').hidden = false; SC.on = true; SC.paused = false; SC.state = 'search'; SC.last = null; SC.sawEmpty = true; SC.lastAdded = null;
   SC.rot = S.settings.rotation === 'auto' ? (SC.goodRot ?? 0) : +S.settings.rotation;
   scanOptsUI(); renderLast();
@@ -796,14 +814,14 @@ A['scan-open'] = async () => {
     scanStatus('Kamera nicht verfügbar');
     toast('Bitte erlaube den Kamerazugriff für Foxycana', 4000);
   }
-};
+}
 function stopScanner(){
   SC.on = false; clearTimeout(SC.timer);
   if(SC.stream){ SC.stream.getTracks().forEach(t => t.stop()); SC.stream = null; }
   vid.srcObject = null; SC.torch = false;
   if(NATIVE) NATIVE.keepAwake(false);
 }
-A['scan-close'] = () => { stopScanner(); $('#scan').hidden = true; if(SC.session.length) toast(`${SC.session.length} Karten gescannt`); render(); };
+A['scan-close'] = () => { stopScanner(); $('#scan').hidden = true; if(SC.session.length) toast(`${SC.session.length} ${SC.session.length === 1 ? "Karte" : "Karten"} gescannt` + (scanTarget() ? ' – im Bundle „' + scanTarget().name + '“' : '')); render(); };
 A['scan-size'] = () => { const o = ['s','m','l']; S.settings.frame = o[(o.indexOf(S.settings.frame || 'm') + 1) % 3]; persist(); scanOptsUI(); SC.state = 'search'; SC.last = null; };
 A['scan-pause'] = () => { SC.paused = !SC.paused; scanStatus(SC.paused ? 'Pausiert' : 'Lege eine Karte unter die Kamera'); scanOptsUI(); };
 A['scan-foil'] = () => { S.settings.foil = !S.settings.foil; persist(); scanOptsUI(); };
@@ -920,8 +938,8 @@ async function scanTick(){
 }
 function confirmScan(r, sig){
   const foil = !!S.settings.foil;
-  addCard(r.c.id, r.lang, foil, 1);
-  const item = {sid: 'x' + Date.now() + Math.random(), c: r.c, lang: r.lang, foil, ambiguous: r.ambiguous, t: Date.now()};
+  const item = {sid: 'x' + Date.now() + Math.random(), c: r.c, lang: r.lang, foil, ambiguous: r.ambiguous, t: Date.now(), target: SC.target};
+  putCard(item, 1);
   SC.session.unshift(item); SC.lastAdded = item; SC.sawEmpty = false;
   SC.state = 'lock'; SC.lockSig = sig; SC.last = null; SC.lastN = 0;
   if(NATIVE){ if(S.settings.sound) NATIVE.beep(); if(S.settings.vibrate) NATIVE.vibrate(60); }
@@ -941,12 +959,12 @@ function renderLast(){
 function sessionItem(sid){ return SC.session.find(x => x.sid === sid); }
 A['scan-undo'] = el => {
   const x = sessionItem(el.dataset.sid); if(!x) return;
-  addCard(x.c.id, x.lang, x.foil, -1); SC.session = SC.session.filter(y => y !== x);
+  putCard(x, -1); SC.session = SC.session.filter(y => y !== x);
   if(SC.lastAdded === x) SC.lastAdded = null;
   renderLast(); scanOptsUI(); if(sheetOpen()) A['scan-list'](); toast('Entfernt: ' + cName(x.c));
 };
 function changeItem(x, patch){
-  addCard(x.c.id, x.lang, x.foil, -1); Object.assign(x, patch); addCard(x.c.id, x.lang, x.foil, 1);
+  putCard(x, -1); Object.assign(x, patch); putCard(x, 1);
   renderLast(); scanOptsUI();
 }
 A['scan-edit'] = el => {
@@ -973,8 +991,8 @@ A['scan-list'] = () => {
 };
 A['scan-manual'] = () => openSearch('Karte manuell hinzufügen', c => {
   const lang = S.settings.scanLang === 'auto' ? S.settings.defaultLang : S.settings.scanLang;
-  addCard(c.id, lang, !!S.settings.foil, 1);
-  const item = {sid:'x' + Date.now(), c, lang, foil: !!S.settings.foil, ambiguous:false, t:Date.now()};
+  const item = {sid:'x' + Date.now(), c, lang, foil: !!S.settings.foil, ambiguous:false, t:Date.now(), target: SC.target};
+  putCard(item, 1);
   SC.session.unshift(item); closeSheet(); renderLast(); scanOptsUI(); toast('Hinzugefügt: ' + cName(c));
 });
 
@@ -991,7 +1009,7 @@ window.__androidBack = () => {
   if(SEL){ selEnd(); return true; }
   if(!$('#scan').hidden){ A['scan-close'](); return true; }
   if(goBack()) return true;
-  if(S.ui.tab !== 'collection' || S.ui.deck || S.ui.assist){ Object.assign(S.ui, {tab:'collection', deck:null, assist:null}); render(); return true; }
+  if(S.ui.tab !== 'collection' || S.ui.deck || S.ui.assist || S.ui.bundle){ Object.assign(S.ui, {tab:'collection', deck:null, assist:null, bundle:null}); render(); return true; }
   return false;
 };
 window.__appPause = () => { saveNow(); try{ autoBackup(); }catch(e){} if(SC.on){ SC.paused = true; scanOptsUI(); scanStatus('Pausiert'); } };
