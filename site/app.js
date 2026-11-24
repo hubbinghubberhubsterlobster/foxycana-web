@@ -790,6 +790,7 @@ function scanOptsUI(){
   $('#frame').className = 'frame size-' + (s.frame || 'm');
   $('#btn-torch').classList.toggle('on', SC.torch);
   const v = SC.session.reduce((sum, x) => sum + (priceEUR(x.c, x.foil) || 0), 0);
+  const pb = $('#btn-photo'); if(pb) pb.hidden = !!NATIVE;
   const b = scanTarget();
   $('#scan-sum').textContent = (b ? '🎁 ' + b.name + ' · ' : '') + `${SC.session.length} ${SC.session.length === 1 ? 'Karte' : 'Karten'} · ${money(v)}`;
 }
@@ -803,16 +804,17 @@ async function startScan(target){
   scanOptsUI(); renderLast();
   if(!NATIVE) scanStatus('Texterkennung wird geladen …');
   try{
-    SC.stream = await navigator.mediaDevices.getUserMedia({audio:false, video:{facingMode:{ideal:'environment'}, width:{ideal:1920}, height:{ideal:1080}}});
+    if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error('Kamera-Zugriff wird von diesem Browser nicht unterstützt');
+    SC.stream = await navigator.mediaDevices.getUserMedia({audio:false, video: NATIVE ? {facingMode:{ideal:'environment'}, width:{ideal:1920}, height:{ideal:1080}} : {facingMode:{ideal:'environment'}, width:{ideal:1280}, height:{ideal:720}}});
     vid.srcObject = SC.stream; await vid.play().catch(() => {});
     try{ const tr = SC.stream.getVideoTracks()[0]; const caps = tr.getCapabilities ? tr.getCapabilities() : {};
       if(caps.focusMode && caps.focusMode.includes('continuous')) await tr.applyConstraints({advanced:[{focusMode:'continuous'}]}); }catch(e){}
     if(NATIVE) NATIVE.keepAwake(true);
-    if(!NATIVE){ try{ await webOcrWorker(); }catch(e){ scanStatus('Texterkennung nicht verfügbar'); return; } }
+    if(!NATIVE){ try{ await webOcrWorker(); }catch(e){ scanStatus('Texterkennung nicht geladen – nutze 📸 Foto'); toast('Texterkennung konnte nicht geladen werden: ' + (e && e.message || e), 5000); return; } }
     scanStatus('Lege eine Karte unter die Kamera'); scanLoop();
   }catch(e){
-    scanStatus('Kamera nicht verfügbar');
-    toast('Bitte erlaube den Kamerazugriff für Foxycana', 4000);
+    scanStatus(NATIVE ? 'Kamera nicht verfügbar' : 'Kamera nicht verfügbar – nutze 📸 Foto');
+    toast(NATIVE ? 'Bitte erlaube den Kamerazugriff für Foxycana' : 'Kamera: ' + (e && (e.name === 'NotAllowedError' ? 'Zugriff verweigert – in den iPhone-Einstellungen → Safari → Kamera erlauben' : e.message) || e), 6000);
   }
 }
 function stopScanner(){
@@ -844,8 +846,13 @@ let TESS = null;
 function loadScript(src){ return new Promise((res, rej) => { const s = document.createElement('script'); s.src = src; s.onload = res; s.onerror = () => rej(new Error('Script')); document.head.appendChild(s); }); }
 async function webOcrWorker(){
   if(TESS) return TESS;
-  if(!window.Tesseract) await loadScript('https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js');
-  TESS = await Tesseract.createWorker(['eng', 'deu']);
+  if(!window.Tesseract){ scanStatus('Lade Texterkennung …'); await loadScript('https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js'); }
+  // Nur Englisch: Kartennamen werden ohnehin ohne Umlaute verglichen – spart Download und Speicher
+  const w = await Tesseract.createWorker('eng', 1, {logger: m => {
+    if(m && m.status && /loading|initializ/i.test(m.status) && !TESS) scanStatus('Texterkennung: ' + Math.round((m.progress || 0) * 100) + ' % (einmalig)');
+  }});
+  try{ await w.setParameters({tessedit_pageseg_mode: '11'}); }catch(e){}
+  TESS = w;
   return TESS;
 }
 async function webOcr(canvas, rot){
@@ -928,7 +935,7 @@ async function scanTick(){
   SC.emptyRun = 0; SC.fail = 0;
   if(S.settings.rotation === 'auto' && SC.goodRot !== SC.rot){ SC.goodRot = SC.rot; scanOptsUI(); }
 
-  const need = Math.max(1, +S.settings.confirm || 2);
+  const need = !NATIVE && r.score >= 0.85 ? 1 : Math.max(1, +S.settings.confirm || 2);  // Browser ist langsamer: bei sicherer Erkennung reicht 1 Bild
   if(SC.last && SC.last.c.id === r.c.id && SC.last.lang === r.lang) SC.lastN++; else { SC.last = r; SC.lastN = 1; }
   if(r.strong || SC.lastN >= need){
     // Dieselbe Karte liegt noch (Hand nur kurz im Bild)? Dann nicht doppelt zählen.
@@ -988,6 +995,32 @@ A['scan-list'] = () => {
       <img src="${esc(cThumb(x.c, x.lang))}" style="width:38px;height:53px;border-radius:5px;object-fit:cover">
       <div class="grow"><b class="ell" style="display:block">${esc(cName(x.c, x.lang))}</b><div class="tiny muted ell">${esc(cVer(x.c, x.lang))} · ${x.lang.toUpperCase()}${x.foil ? ' · Foil' : ''}${x.ambiguous ? ' · <span class="gold">Druck prüfen</span>' : ''}</div></div>
       <span class="gold small">${money(priceEUR(x.c, x.foil))}</span><button class="chip" data-act="scan-edit" data-sid="${x.sid}">✎</button></div>`).join('') || '<div class="empty">Noch nichts gescannt.</div>'}</div>`);
+};
+/* Foto statt Live-Kamera (vor allem iPhone): Foto aufnehmen → erkennen → hinzufügen */
+A['scan-photo'] = () => {
+  const f = $('#file-in'); f.value = ''; f.accept = 'image/*'; f.setAttribute('capture', 'environment');
+  f.onchange = async () => {
+    f.removeAttribute('capture');
+    const file = f.files && f.files[0]; if(!file) return;
+    SC.paused = true; scanStatus('Lese Foto …', 'read');
+    try{
+      const img = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = URL.createObjectURL(file); });
+      const cv = document.createElement('canvas'), k = Math.min(1, 1400 / Math.max(img.width, img.height));
+      cv.width = Math.round(img.width * k); cv.height = Math.round(img.height * k); cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
+      let r = null;
+      for(const rot of [SC.goodRot ?? 0, ...ROTS.filter(x => x !== (SC.goodRot ?? 0))]){
+        scanStatus('Lese Foto … (' + rot + '°)', 'read');
+        const res = NATIVE ? await runOcr(cv.toDataURL('image/jpeg', 0.9), rot) : await webOcr(cv, rot);
+        r = res && !res.error ? ENGINE.identify(res) : null;
+        if(r && !r.empty){ SC.goodRot = rot; break; }
+        r = null;
+      }
+      if(r){ confirmScan(r, null); SC.state = 'search'; }
+      else { scanStatus('Karte nicht erkannt – Foto näher und gerade aufnehmen'); toast('Nicht erkannt. Tipp: Karte formatfüllend und gut beleuchtet fotografieren, oder „+ Manuell“.', 4500); }
+    }catch(e){ scanStatus('Foto konnte nicht gelesen werden'); }
+    SC.paused = false;
+  };
+  f.click();
 };
 A['scan-manual'] = () => openSearch('Karte manuell hinzufügen', c => {
   const lang = S.settings.scanLang === 'auto' ? S.settings.defaultLang : S.settings.scanLang;
