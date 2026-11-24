@@ -94,8 +94,10 @@ const ASSIST = (() => {
     }
   }
   let POOLQ = null; // Karten-Anzahl im gewählten Bundle (Karten-ID → Anzahl)
+  let QTY_OVERRIDE;  // für Koop: Sammlung einer anderen Person (Map) oder null = eigene Sammlung
   function ensure(){
     if(!POWER || !GROUPS) buildPower();
+    if(QTY_OVERRIDE !== undefined){ POOLQ = QTY_OVERRIDE; refreshOwned(); return; }
     const b = st.pool ? bundleById(st.pool) : null;
     POOLQ = b ? (() => { const m = new Map(); for(const e of bundleEntries(b)) m.set(e.c.id, (m.get(e.c.id) || 0) + e.q); return m; })() : null;
     refreshOwned();
@@ -368,7 +370,7 @@ const ASSIST = (() => {
     else if(best) metaS = 0.4;
     let score = 100 * (0.75 * quality + 0.25 * metaS);
     const want = d.size || (d.pool ? 40 : 60); if(n < want) score -= (want - n) * 0.5;
-    if(illegal && st.tourney) score -= illegal * 0.3;
+    if(illegal && (d.tourney ?? st.tourney)) score -= illegal * 0.3;
     if(inks.size > 2) score -= 15;
     score = Math.max(0, Math.round(score));
     const tier = score >= 72 ? 'S' : score >= 63 ? 'A' : score >= 54 ? 'B' : score >= 45 ? 'C' : 'D';
@@ -595,6 +597,25 @@ const ASSIST = (() => {
   };
 
   function forPool(id){ st.filter = 'best'; st.pool = id; st.size = 40; st.mode = 'owned'; st.results = null; st.best = null; st.recs = null; st.inks = []; st.metaPick = null; }
-  return {forPool, render, loadMeta, rateDeck, guide, analyze, features, metaLoaded: () => !!META, state: st, reset(){ POWER = null; GROUPS = null; st.best = null; st.recs = null; st.metaHave = null; }};
+  /* Koop: die stärksten vollständigen Decks einer Sammlung (qty = Map Karten-ID → Anzahl, null = eigene) */
+  function recsFor(qty, tourney){
+    QTY_OVERRIDE = qty; ensure();
+    const out = [];
+    try{
+      for(const style of ['aggro', 'midrange', 'control']) for(const p of PAIRS){
+        const r = buildDeck(p, {style, prefs:{}, pins:[], format: tourney ? 'core' : 'infinity', mode:'owned', size: 60, noBuy: true});
+        if(r.total < 60) continue;
+        r.style = style;
+        const d = {cards:{}, size:60, tourney}; for(const x of r.lines){ const c = x.g.ownCard || x.g.rep; d.cards[c.id] = (d.cards[c.id] || 0) + x.n; }
+        r.deck = d; r.rt = rateDeck(d);
+        r.feat = features(analyze(r.lines.map(x => ({c:x.g.rep, n:x.n}))));
+        out.push(r);
+      }
+    } finally { QTY_OVERRIDE = undefined; }
+    // je Farbpaar nur die stärkste Variante
+    const best = new Map(); for(const r of out){ const k = r.pair.join('/'); if(!best.has(k) || best.get(k).rt.score < r.rt.score) best.set(k, r); }
+    return [...best.values()].sort((a, b) => b.rt.score - a.rt.score);
+  }
+  return {recsFor, forPool, render, loadMeta, rateDeck, guide, analyze, features, metaLoaded: () => !!META, state: st, reset(){ POWER = null; GROUPS = null; st.best = null; st.recs = null; st.metaHave = null; }};
 })();
 window.ASSIST = ASSIST;

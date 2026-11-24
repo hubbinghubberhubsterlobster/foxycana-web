@@ -57,13 +57,14 @@ const S = {
   rates: {EUR:1}, ratesDate: null, ratesFetched: 0,
   coll: {},      // "id|lang|foil" -> {q, t}
   decks: [],
-  bundles: [],   // Bundle-Events: {id, name, prod, created, cards:{key:{q,t}}, merged}
+  bundles: [],
+  partners: [],  // Koop: {id, name, created, updated, coll, tourney}   // Bundle-Events: {id, name, prod, created, cards:{key:{q,t}}, merged}
   extraDecks: [],
   settings: {
     currency:'EUR', dispLang:'de', priceBasis:'trend',
     scanLang:'auto', defaultLang:'de', confirm:2, sound:true, vibrate:true, rotation:'auto', foil:false, frame:'m'
   },
-  ui: { bundle:null, assist:null, tab:'collection', mode:'owned', q:'', inks:[], set:'', rarity:'', type:'', lang:'', foil:'', sort:'value', limit:240, deck:null }
+  ui: { partner:null, duel:false, bundle:null, assist:null, tab:'collection', mode:'owned', q:'', inks:[], set:'', rarity:'', type:'', lang:'', foil:'', sort:'value', limit:240, deck:null }
 };
 
 /* ---------- Hilfsfunktionen ---------- */
@@ -113,7 +114,7 @@ let saveTimer = null;
 function persist(){ clearTimeout(saveTimer); saveTimer = setTimeout(saveNow, 250); if(window.scheduleAutoBackup) window.scheduleAutoBackup(); }
 async function saveNow(){
   clearTimeout(saveTimer);
-  const data = {coll:S.coll, decks:S.decks, bundles:S.bundles, settings:S.settings, extraDecks:S.extraDecks};
+  const data = {coll:S.coll, decks:S.decks, bundles:S.bundles, partners:S.partners, settings:S.settings, extraDecks:S.extraDecks};
   try{ localStorage.setItem('fx-user', JSON.stringify(data)); }catch(e){}
   try{ await DB.set('user', data); }catch(e){}
 }
@@ -121,7 +122,7 @@ async function loadUser(){
   let u = await DB.get('user');
   if(!u){ try{ u = JSON.parse(localStorage.getItem('fx-user') || 'null'); }catch(e){ u = null; } }
   if(u){
-    S.coll = u.coll || {}; S.decks = u.decks || []; S.bundles = u.bundles || []; S.extraDecks = u.extraDecks || [];
+    S.coll = u.coll || {}; S.decks = u.decks || []; S.bundles = u.bundles || []; S.partners = u.partners || []; S.extraDecks = u.extraDecks || [];
     Object.assign(S.settings, u.settings || {});
   }
 }
