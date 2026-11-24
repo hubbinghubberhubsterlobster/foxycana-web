@@ -855,19 +855,46 @@ async function webOcrWorker(){
   TESS = w;
   return TESS;
 }
-async function webOcr(canvas, rot){
-  const w = await webOcrWorker();
+/* Bild für die Browser-Texterkennung vorbereiten: drehen, nur Namensband + Sammlernummer ausschneiden,
+   vergrößern, Graustufen + Kontrast. Kleineres Bild = deutlich schneller auf dem iPhone. */
+function webPrep(canvas, rot, full){
   let src = canvas;
   if(rot){
     const t = document.createElement('canvas'), sw = rot % 180 ? canvas.height : canvas.width, sh = rot % 180 ? canvas.width : canvas.height;
     t.width = sw; t.height = sh; const x = t.getContext('2d');
     x.translate(sw / 2, sh / 2); x.rotate(rot * Math.PI / 180); x.drawImage(canvas, -canvas.width / 2, -canvas.height / 2); src = t;
   }
+  const W = src.width, H = src.height;
+  // Lorcana: Name + Version im Band unter dem Bild (~40–76 %), Sammlernummer ganz unten (~90–100 %)
+  const bands = full ? [[0, 1]] : [[0.38, 0.76], [0.89, 1]];
+  const outW = Math.min(1000, Math.max(700, W * 1.4));
+  const k = outW / W;
+  const hs = bands.map(([a, b]) => Math.round((b - a) * H * k));
+  const out = document.createElement('canvas'); out.width = Math.round(outW); out.height = hs.reduce((s2, h) => s2 + h + 12, 0);
+  const o = out.getContext('2d', {willReadFrequently:true}); o.fillStyle = '#fff'; o.fillRect(0, 0, out.width, out.height);
+  let y = 0;
+  bands.forEach(([a, b], i) => { o.drawImage(src, 0, a * H, W, (b - a) * H, 0, y, out.width, hs[i]); y += hs[i] + 12; });
   try{
+    const img = o.getImageData(0, 0, out.width, out.height), d = img.data;
+    let lo = 255, hi = 0; const g = new Uint8ClampedArray(d.length / 4);
+    for(let i = 0, j = 0; i < d.length; i += 4, j++){ const v = (d[i] * 3 + d[i+1] * 6 + d[i+2]) / 10; g[j] = v; if(v < lo) lo = v; if(v > hi) hi = v; }
+    const span = Math.max(40, hi - lo);
+    let sum = 0; for(let j = 0; j < g.length; j++) sum += g[j];
+    const inv = sum / g.length < (lo + hi) / 2;   // überwiegend dunkel → umdrehen: Texterkennung mag dunkle Schrift auf hell
+    for(let i = 0, j = 0; i < d.length; i += 4, j++){ let v = (g[j] - lo) * 255 / span; if(inv) v = 255 - v; d[i] = d[i+1] = d[i+2] = v; }
+    o.putImageData(img, 0, 0);
+  }catch(e){}
+  return out;
+}
+async function webOcr(canvas, rot, full){
+  const w = await webOcrWorker();
+  const src = webPrep(canvas, rot, full);
+  try{
+    try{ await w.setParameters({tessedit_pageseg_mode: full ? '11' : '6'}); }catch(e){}
     const {data} = await w.recognize(src);
     let lines = (data.lines || []).map(l => ({t: String(l.text || '').trim()}));
     if(!lines.length && data.text) lines = data.text.split('\n').map(t => ({t: t.trim()}));
-    return {lines: lines.filter(l => l.t)};
+    return {lines: lines.filter(l => l.t && /[A-Za-z0-9]{2}/.test(l.t))};
   }catch(e){ return {error: String(e)}; }
 }
 const sigCv = $('#cv-sig'), sigCtx = sigCv.getContext('2d', {willReadFrequently:true});
@@ -911,18 +938,20 @@ async function scanTick(){
   }
   // Nur den Bereich im Rahmen auswerten – Nachbarkarten (z. B. im Binder) werden ignoriert
   const cv = $('#cv');
-  const sc = NATIVE ? Math.min(2, Math.max(1, 1400 / Math.max(crop.w, crop.h))) : Math.min(1.5, 1000 / Math.max(crop.w, crop.h));
+  const sc = NATIVE ? Math.min(2, Math.max(1, 1400 / Math.max(crop.w, crop.h))) : Math.min(2, 900 / Math.max(crop.w, crop.h));
   cv.width = Math.round(crop.w * sc); cv.height = Math.round(crop.h * sc);
   const cx = cv.getContext('2d'); cx.imageSmoothingQuality = 'high';
   cx.drawImage(vid, crop.x, crop.y, crop.w, crop.h, 0, 0, cv.width, cv.height);
-  const res = NATIVE ? await runOcr(cv.toDataURL('image/jpeg', 0.86), SC.rot) : await webOcr(cv, SC.rot);
+  // Browser: meist nur Namensband + Nummer lesen (schnell); jeder 3. Fehlversuch liest die ganze Karte
+  const full = !NATIVE && (SC.webMiss || 0) % 3 === 2;
+  const res = NATIVE ? await runOcr(cv.toDataURL('image/jpeg', 0.86), SC.rot) : await webOcr(cv, SC.rot, full);
   if(!SC.on || SC.paused) return;
   if(res.error){ scanStatus('Texterkennung: ' + res.error); return; }
   const nLines = (res.lines || []).length;
   const r = ENGINE.identify(res);
 
   if(!r || r.empty){
-    SC.last = null; SC.lastN = 0;
+    SC.last = null; SC.lastN = 0; SC.webMiss = (SC.webMiss || 0) + 1;
     if(r && r.empty){ SC.emptyRun++; if(SC.emptyRun >= 2) SC.sawEmpty = true; } else SC.emptyRun = 0;
     // Ausrichtung automatisch durchprobieren, solange nichts erkannt wird
     if(S.settings.rotation === 'auto'){
@@ -932,7 +961,7 @@ async function scanTick(){
     scanStatus(nLines >= 2 ? 'Lese Karte …' : 'Lege eine Karte unter die Kamera', nLines >= 2 ? 'read' : '');
     return;
   }
-  SC.emptyRun = 0; SC.fail = 0;
+  SC.emptyRun = 0; SC.fail = 0; SC.webMiss = 0;
   if(S.settings.rotation === 'auto' && SC.goodRot !== SC.rot){ SC.goodRot = SC.rot; scanOptsUI(); }
 
   const need = !NATIVE && r.score >= 0.85 ? 1 : Math.max(1, +S.settings.confirm || 2);  // Browser ist langsamer: bei sicherer Erkennung reicht 1 Bild
@@ -1010,7 +1039,7 @@ A['scan-photo'] = () => {
       let r = null;
       for(const rot of [SC.goodRot ?? 0, ...ROTS.filter(x => x !== (SC.goodRot ?? 0))]){
         scanStatus('Lese Foto … (' + rot + '°)', 'read');
-        const res = NATIVE ? await runOcr(cv.toDataURL('image/jpeg', 0.9), rot) : await webOcr(cv, rot);
+        const res = NATIVE ? await runOcr(cv.toDataURL('image/jpeg', 0.9), rot) : await webOcr(cv, rot, true);
         r = res && !res.error ? ENGINE.identify(res) : null;
         if(r && !r.empty){ SC.goodRot = rot; break; }
         r = null;
