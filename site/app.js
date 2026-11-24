@@ -75,13 +75,13 @@ function stepper(attrs, q){
 /* ---------- Navigation ---------- */
 /* Verlauf: Zurück-Knopf und Android-Zurückwischen gehen zur vorherigen Ansicht */
 const NAV = [];
-function snap(){ const u = S.ui; return {tab:u.tab, deck:u.deck, assist:u.assist, bundle:u.bundle, mode:u.mode, set:u.set, sort:u.sort, q:u.q, inks:[...u.inks], rarity:u.rarity, type:u.type, lang:u.lang, foil:u.foil, y: window.scrollY}; }
+function snap(){ const u = S.ui; return {pick:u.pick, tab:u.tab, deck:u.deck, assist:u.assist, bundle:u.bundle, mode:u.mode, set:u.set, sort:u.sort, q:u.q, inks:[...u.inks], rarity:u.rarity, type:u.type, lang:u.lang, foil:u.foil, y: window.scrollY}; }
 function go(ch){ NAV.push(snap()); if(NAV.length > 50) NAV.shift(); Object.assign(S.ui, ch); S.ui.limit = 240; render(); window.scrollTo(0, 0); }
 function goBack(){ if(!NAV.length) return false; const st = NAV.pop(); const y = st.y; delete st.y; Object.assign(S.ui, st); render(); setTimeout(() => window.scrollTo(0, y || 0), 0); return true; }
 function backBtn(){ return NAV.length ? `<button class="round back" data-act="back" aria-label="Zurück">‹</button>` : ''; }
 A.back = () => { if(!goBack()) go({tab:'collection', deck:null, assist:null}); };
 // Hauptseiten (unten) haben keinen Verlauf: dort gibt es kein Zurück
-A.tab = el => { const t = el.dataset.tab; NAV.length = 0; if(t === S.ui.tab && !S.ui.deck && !S.ui.assist && !S.ui.bundle && !(t === 'collection' && S.ui.set)){ window.scrollTo(0, 0); render(); return; } Object.assign(S.ui, {tab:t, deck:null, assist:null, bundle:null, limit:240}); if(t === 'collection') S.ui.set = ''; render(); window.scrollTo(0, 0); };
+A.tab = el => { const t = el.dataset.tab; NAV.length = 0; if(t === S.ui.tab && !S.ui.deck && !S.ui.assist && !S.ui.bundle && !(t === 'collection' && S.ui.set)){ window.scrollTo(0, 0); render(); return; } Object.assign(S.ui, {tab:t, deck:null, assist:null, bundle:null, pick:false, limit:240}); if(t === 'collection') S.ui.set = ''; render(); window.scrollTo(0, 0); };
 function render(){
   if(SEL && S.ui.tab !== 'collection') selEnd();
   $$('#nav .nav-btn').forEach(b => b.classList.toggle('on', b.dataset.tab === S.ui.tab));
@@ -89,8 +89,8 @@ function render(){
   const t = S.ui.tab;
   if(t === 'collection') renderCollection();
   else if(t === 'sets') renderSets();
-  else if(t === 'decks') S.ui.assist ? ASSIST.render() : S.ui.deck ? renderDeck() : renderDecks();
-  else if(t === 'bundles') S.ui.assist ? ASSIST.render() : S.ui.deck ? renderDeck() : S.ui.bundle ? renderBundle() : renderBundles();
+  else if(t === 'decks') S.ui.assist ? ASSIST.render() : S.ui.deck ? (S.ui.pick ? renderPick() : renderDeck()) : renderDecks();
+  else if(t === 'bundles') S.ui.assist ? ASSIST.render() : S.ui.deck ? (S.ui.pick ? renderPick() : renderDeck()) : S.ui.bundle ? renderBundle() : renderBundles();
   else S.ui.assist ? ASSIST.render() : renderMore();
 }
 
@@ -442,7 +442,7 @@ function renderDecks(){
     <button class="btn ghost block" data-act="deck-import" style="margin-top:6px">Deckliste einfügen (Text)</button>
 `;
 }
-A['deck-open'] = el => { const d = S.decks.find(x => x.id === el.dataset.id); go({tab: d && d.pool ? 'bundles' : 'decks', deck: el.dataset.id, assist:null}); };
+A['deck-open'] = el => { const d = S.decks.find(x => x.id === el.dataset.id); go({tab: d && d.pool ? 'bundles' : 'decks', deck: el.dataset.id, assist:null, pick:false}); };
 A['deck-back'] = () => { if(!goBack()){ S.ui.deck = null; render(); } };
 A['deck-new'] = async () => {
   const name = await promptText('Neues Deck', '', 'z. B. Bernstein/Stahl Aggro'); if(!name) return;
@@ -474,7 +474,7 @@ function renderDeck(){
     ${warn.length ? `<div class="warn" style="margin-bottom:12px">${warn.map(esc).join('<br>')}</div>` : ''}
     ${window.ASSIST && cards.length ? `<details class="guide-box"><summary>📖 So spielst du dieses Deck</summary>${ASSIST.guide(cards)}</details>` : ''}
     <div class="card"><b class="small">Kostenkurve</b><div class="curve">${st.curve.map((n, i) => `<div><span>${n || ''}</span><i style="height:${Math.round(n / maxC * 56)}px"></i>${i === 8 ? '8+' : i}</div>`).join('')}</div></div>
-    <div class="row" style="gap:8px;margin:12px 0"><button class="btn grow" data-act="deck-add">+ Karten</button><button class="btn ghost" data-act="deck-menu">⋯</button></div>
+    <div class="row" style="gap:8px;margin:12px 0"><button class="btn grow" data-act="deck-pick">🧺 Zusammensuchen</button><button class="btn ghost" data-act="deck-add">+ Karten</button><button class="btn ghost" data-act="deck-menu">⋯</button></div>
     ${Object.entries(groups).map(([t, xs]) => `<h3>${esc(TYPE_DE[t] || t)} <span class="muted">(${xs.reduce((s, x) => s + x.n, 0)})</span></h3>` + xs.map(x => {
       const k = gkey(x.c), need = ALLOC.needs.get(d.id).get(k) || x.n, a = (d.alloc && d.alloc[k]) || 0, miss = Math.max(0, need - a);
       const GR = ALLOC.G(d), others = (GR.holders.get(k) || []).filter(h => h.d.id !== d.id);
@@ -503,6 +503,82 @@ A['alloc-take'] = el => {
   persist(); syncAlloc(); renderDeck();
   toast(`${can}× ins Deck geholt – in „${from.name}“ fehlt sie jetzt`, 3500);
 };
+/* =========================================================
+   Zusammensuchen: Deckkarten nach Farbe → Kosten → Typ, mit Abhaken und Fundort
+   ========================================================= */
+const PICK_TYPES = [['all','Alle'],['Character','Charaktere'],['Location','Orte'],['Action','Aktionen'],['Song','Lieder'],['Item','Gegenstände']];
+let PICK_T = 'all', PICK_HIDE = false;
+function pickType(c){ return c.t === 'Action' && (c.sub || []).includes('Song') ? 'Song' : c.t; }
+const PICK_TYPE_DE = {Character:'Charakter', Location:'Ort', Action:'Aktion', Song:'Lied', Item:'Gegenstand'};
+A['deck-pick'] = () => go({pick: true});
+function renderPick(){
+  const d = currentDeck(); if(!d){ S.ui.pick = false; return render(); }
+  const AL = syncAlloc(), GR = AL.G(d), picked = d.picked || (d.picked = {});
+  // Karten der Liste zusammenfassen (gleiche Karte, alle Drucke)
+  const lines = new Map();
+  for(const [id, n] of Object.entries(d.cards)){
+    const c = S.byId.get(+id) || S.byId.get(id); if(!c) continue;
+    const k = gkey(c); const x = lines.get(k) || {k, c, n:0}; x.n += n; lines.set(k, x);
+  }
+  // wo liegen deine Exemplare? (Druck, Sprache, Foil) – aus Sammlung oder Bundle
+  const own = new Map();
+  const src = d.pool && bundleById(d.pool) ? bundleEntries(bundleById(d.pool)) : entries();
+  for(const e of src){ const k = gkey(e.c); if(!lines.has(k)) continue; if(!own.has(k)) own.set(k, []); own.get(k).push(e); }
+  let total = 0, done = 0;
+  for(const x of lines.values()){ total += x.n; done += Math.min(x.n, picked[x.k] || 0); }
+  // Gruppen: Farbe → Kosten
+  const inkOrder = Object.keys(INKS);
+  const groups = new Map();
+  for(const x of lines.values()){
+    if(PICK_T !== 'all' && pickType(x.c) !== PICK_T) continue;
+    if(PICK_HIDE && (picked[x.k] || 0) >= x.n) continue;
+    const ik = inkList(x.c), g = ik.length === 1 ? ik[0] : 'Dual';
+    if(!groups.has(g)) groups.set(g, []);
+    groups.get(g).push(x);
+  }
+  const order = [...groups.keys()].sort((a, b) => (a === 'Dual' ? 9 : inkOrder.indexOf(a)) - (b === 'Dual' ? 9 : inkOrder.indexOf(b)));
+  const html = order.map(g => {
+    const xs = groups.get(g).sort((a, b) => (a.c.ct ?? 0) - (b.c.ct ?? 0) || pickType(a.c).localeCompare(pickType(b.c)) || cName(a.c).localeCompare(cName(b.c), 'de'));
+    const gn = xs.reduce((s2, x) => s2 + x.n, 0), gd = xs.reduce((s2, x) => s2 + Math.min(x.n, picked[x.k] || 0), 0);
+    const col = g === 'Dual' ? 'linear-gradient(90deg,#F4B223,#1C8FD6)' : INKS[g].c;
+    let lastCost = null;
+    return `<div class="pick-ink"><div class="row between pick-ink-head"><div class="row" style="gap:8px"><i class="dot" style="background:${col};width:16px;height:16px"></i><b>${g === 'Dual' ? 'Zweifarbig' : INKS[g].de}</b></div><span class="tiny muted">${gd}/${gn} gefunden</span></div>
+      ${xs.map(x => {
+        const head = x.c.ct !== lastCost ? `<div class="pick-cost">${x.c.ct ?? '–'} Tinte</div>` : ''; lastCost = x.c.ct;
+        const got = Math.min(x.n, picked[x.k] || 0), full = got >= x.n;
+        const a = (d.alloc && d.alloc[x.k]) || 0, others = (GR.holders.get(x.k) || []).filter(h => h.d.id !== d.id);
+        const totalOwn = GR.own.get(x.k) || 0, used = GR.used.get(x.k) || 0, free = Math.max(0, totalOwn - used);
+        const prints = (own.get(x.k) || []).sort((p, q) => q.q - p.q).map(e => `${esc(setName(e.c.s))} #${e.c.n ?? ''}${esc(e.c.v)} · ${e.lang.toUpperCase()}${e.foil ? ' ✦' : ''} ×${e.q}`).join('<br>');
+        const where = [];
+        if(a) where.push(`<span style="color:var(--good)">${a}× für dieses Deck</span>`);
+        if(free) where.push(`${free}× frei`);
+        for(const h of others) where.push(`<span class="gold">${h.n}× in „${esc(h.d.name)}“</span>`);
+        if(x.n > totalOwn) where.push(`<span class="miss">${x.n - totalOwn}× ${d.pool ? 'nicht im Bundle' : 'nicht im Besitz'}</span>`);
+        return head + `<div class="pick-line ${full ? 'done' : ''}">
+          <button class="pick-box" data-act="pick-toggle" data-k="${esc(x.k)}">${full ? '✓' : got ? got : ''}</button>
+          <img src="${esc(cThumb(x.c))}" loading="lazy" data-act="card" data-id="${x.c.id}">
+          <div class="grow" data-act="pick-toggle" data-k="${esc(x.k)}"><div class="ell"><b>${x.n}× ${esc(cName(x.c))}</b> <span class="tag">${PICK_TYPE_DE[pickType(x.c)] || x.c.t}</span></div>
+            <div class="tiny muted ell">${esc(cVer(x.c))}</div>
+            <div class="tiny" style="margin-top:2px">${where.join(' · ')}</div>
+            ${prints ? `<div class="tiny muted" style="margin-top:2px">${prints}</div>` : ''}</div>
+          ${x.n > 1 && !full ? `<button class="chip mini" data-act="pick-one" data-k="${esc(x.k)}">+1</button>` : ''}</div>`;
+      }).join('')}</div>`;
+  }).join('');
+  view.innerHTML = `<div class="row">${backBtn()}<h1 class="grow ell">🧺 ${esc(d.name)}</h1></div>
+    <div class="card" style="margin-bottom:10px"><div class="row between"><b>${done}/${total} Karten zusammengesucht</b><button class="chip mini" data-act="pick-reset">Neu starten</button></div>
+      <div class="progress" style="margin-top:8px"><i style="width:${total ? Math.round(done / total * 100) : 0}%"></i></div>
+      <div class="tiny muted" style="margin-top:6px">Sortiert nach Farbe und Tintenkosten. Tippe eine Karte an, wenn du sie gefunden hast. Darunter steht, welchen Druck du suchst und ob sie gerade in einem anderen Deck steckt.</div></div>
+    <div class="chips" style="margin-bottom:8px">${PICK_TYPES.map(([k, l]) => `<button class="chip ${PICK_T === k ? 'on' : ''}" data-act="pick-type" data-t="${k}">${l}</button>`).join('')}</div>
+    <label class="switch-row"><input type="checkbox" data-act="pick-hide" ${PICK_HIDE ? 'checked' : ''}><span class="switch"></span><span class="small">Gefundene ausblenden</span></label>
+    ${html || `<div class="empty">${done >= total && total ? '🎉 Alles zusammengesucht!' : 'Keine Karten für diesen Filter.'}</div>`}
+    ${done >= total && total ? `<div class="card" style="margin-top:12px;text-align:center">🎉 <b>Deck komplett!</b> Viel Spaß beim Spielen.</div>` : ''}`;
+}
+function pickSet(k, v){ const d = currentDeck(); if(!d) return; d.picked = d.picked || {}; if(v > 0) d.picked[k] = v; else delete d.picked[k]; persist(); const y = window.scrollY; renderPick(); window.scrollTo(0, y); }
+A['pick-toggle'] = el => { const d = currentDeck(), k = el.dataset.k; const need = ALLOC.needs.get(d.id).get(k) || 0, got = (d.picked || {})[k] || 0; pickSet(k, got >= need ? 0 : need); };
+A['pick-one'] = el => { const d = currentDeck(), k = el.dataset.k; const need = ALLOC.needs.get(d.id).get(k) || 0, got = (d.picked || {})[k] || 0; pickSet(k, Math.min(need, got + 1)); };
+A['pick-type'] = el => { PICK_T = el.dataset.t; renderPick(); };
+A['pick-hide'] = () => { PICK_HIDE = !PICK_HIDE; renderPick(); };
+A['pick-reset'] = async () => { const d = currentDeck(); const ok = await ask('Neu starten?', 'Alle Häkchen in dieser Liste werden entfernt.', [{l:'Abbrechen', v:false, c:'ghost'}, {l:'Neu starten', v:true}]); if(ok){ d.picked = {}; persist(); renderPick(); } };
 A['deck-step'] = el => { const d = currentDeck(); const id = el.dataset.id; d.cards[id] = (d.cards[id] || 0) + +el.dataset.d; if(d.cards[id] <= 0) delete d.cards[id]; persist(); renderDeck(); };
 A['deck-add'] = () => {
   const d = currentDeck(); const st = deckStats(d);

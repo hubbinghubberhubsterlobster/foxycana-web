@@ -191,3 +191,12 @@ body.selecting .tile:not(.chosen) .img:after{content:"";position:absolute;top:6p
 .switch:after{content:"";position:absolute;top:2px;left:2px;width:20px;height:20px;border-radius:50%;background:#cfcde0;transition:transform .2s}
 .switch-row input:checked + .switch{background:var(--good);border-color:var(--good)}
 .switch-row input:checked + .switch:after{transform:translateX(18px);background:#fff}
+
+.pick-ink{margin-bottom:16px}
+.pick-ink-head{position:sticky;top:0;z-index:2;background:var(--bg);padding:8px 0;border-bottom:1px solid var(--line)}
+.pick-cost{font-size:11.5px;font-weight:700;color:var(--gold);text-transform:uppercase;letter-spacing:1px;margin:10px 0 2px}
+.pick-line{display:flex;align-items:flex-start;gap:10px;padding:8px 0;border-bottom:1px solid var(--line)}
+.pick-line img{width:38px;height:53px;border-radius:5px;object-fit:cover;background:var(--surface2);flex:0 0 auto}
+.pick-box{width:30px;height:30px;border-radius:8px;border:2px solid var(--line);flex:0 0 auto;font-weight:800;color:var(--gold);margin-top:10px}
+.pick-line.done{opacity:.5}
+.pick-line.done .pick-box{background:var(--good);border-color:var(--good);color:#fff}
