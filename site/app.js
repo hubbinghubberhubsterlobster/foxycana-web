@@ -717,45 +717,75 @@ A['coll-clear'] = async () => {
   const ok = await ask('Sammlung leeren?', 'Alle Karten werden aus deiner Sammlung entfernt. Decks bleiben erhalten. Tipp: vorher ein Backup speichern.', [{l:'Abbrechen', v:false, c:'ghost'}, {l:'Leeren', v:true, c:'danger'}]);
   if(ok){ S.coll = {}; persist(); toast('Sammlung geleert'); render(); }
 };
-A['csv-import'] = async () => {
-  const t = await pickFile('.csv,.txt,text/csv,text/plain'); if(!t) return;
-  const rows = ENGINE.parseCSV(t); if(rows.length < 2){ toast('Datei ist leer'); return; }
-  const H = rows[0].map(h => ENGINE.norm(h));
+/* Kartenliste aus einer Datei lesen: CSV von Lorcery, Dreamborn, Foxycana & Co. – oder eine Textliste ("4 Elsa - Snow Queen").
+   Rückgabe: {out:[{c, lang, foil, n}], bad:[Zeilen]} */
+function setCodeFrom(v){
+  const t = String(v || '').trim(); if(!t) return '';
+  const num = t.replace(/^0+(\d)/, '$1');
+  if(S.sets[num]) return num;
+  const n = ENGINE.norm(t);
+  for(const s of Object.values(S.sets)) if(ENGINE.norm(s.name.en) === n || ENGINE.norm(s.name.de) === n) return s.code;
+  for(const s of Object.values(S.sets)) if(n.length >= 4 && (ENGINE.norm(s.name.en).includes(n) || ENGINE.norm(s.name.de).includes(n))) return s.code;
+  return '';
+}
+function parseCardFile(t){
+  const rows = ENGINE.parseCSV(t);
+  const head = rows[0] || [];
+  // Keine Tabelle (nur eine Spalte) → als Textliste lesen
+  if(head.length < 2){
+    const {ok, bad} = ENGINE.parseDecklist(t.replace(/\s+\*F\*\s*$/gim, ' '));
+    const foilLines = new Set(t.split(/\r?\n/).filter(l => /\*F\*|\bfoil\b/i.test(l)).map(l => l.trim()));
+    return {out: ok.map(x => ({c: x.c, lang: S.settings.defaultLang, foil: false, n: x.n})), bad, foilLines};
+  }
+  const H = head.map(h => ENGINE.norm(h));
   const find = (...res) => { for(const re of res){ const i = H.findIndex(h => re.test(h)); if(i >= 0) return i; } return -1; };
-  const iSet = find(/^SET( NUMBER| NR| NO| CODE| ID)?$/, /^SET (NUM|NR|CODE)/, /^EDITION$/);
-  const iNum = find(/^CARD (NUMBER|NR|NO)$/, /^(NUMBER|NR|NO|NUMMER|COLLECTOR NUMBER)$/, /NUMBER/);
-  const iFoilCount = find(/^FOIL (COUNT|QUANTITY|QTY|ANZAHL)$/, /^(COUNT|QUANTITY|QTY) FOIL$/);
-  const iCount = find(/^(COUNT|QUANTITY|QTY|ANZAHL|AMOUNT|MENGE)$/, /^(NORMAL|REGULAR)( COUNT| QUANTITY| QTY)?$/, /COUNT|QUANTITY|QTY/);
-  const iVar = find(/^(VARIANT|FINISH|PRINTING|FOIL|IS FOIL|AUSFUHRUNG)$/);
+  const iSet = find(/^SET( NUMBER| NR| NO| CODE| ID)?$/, /^SET (NUM|NR|CODE)/, /^(EDITION|EXPANSION|SET NAME)$/, /^SET\b/);
+  const iNum = find(/^CARD (NUMBER|NR|NO)$/, /^(NUMBER|NR|NO|NUMMER|COLLECTOR NUMBER|PRINT NUMBER|PRINTNUMBER|CARD NO|ID)$/, /NUMBER/);
+  const iFoilCount = find(/^FOIL (COUNT|QUANTITY|QTY|ANZAHL|AMOUNT)$/, /^(COUNT|QUANTITY|QTY|AMOUNT) FOIL$/, /^FOILS?$/);
+  const iCount = find(/^(COUNT|QUANTITY|QTY|ANZAHL|AMOUNT|MENGE|OWNED)$/, /^(NORMAL|REGULAR|NON FOIL|NONFOIL)( COUNT| QUANTITY| QTY| AMOUNT)?$/, /COUNT|QUANTITY|QTY|AMOUNT/);
+  let iVar = find(/^(VARIANT|FINISH|PRINTING|IS FOIL|AUSFUHRUNG|TREATMENT)$/);
   const iLang = find(/^(LANGUAGE|LANG|SPRACHE)$/);
-  const iName = find(/^(NAME|CARD NAME|CARD|KARTE|FULL NAME)$/);
-  const iVer = find(/^(VERSION|SUBTITLE|TITLE)$/);
+  const iName = find(/^(NAME|CARD NAME|CARDNAME|CARD|KARTE|FULL NAME|TITLE)$/, /NAME/);
+  const iVer = find(/^(VERSION|SUBTITLE|SUB TITLE)$/);
+  // Eine "Foil"-Spalte mit ja/nein statt Anzahl ist eine Ausführungs-Spalte
+  let foilCountCol = iFoilCount;
+  if(iFoilCount >= 0 && iVar < 0){
+    const vals = rows.slice(1, 30).map(r => String(r[iFoilCount] || '').trim()).filter(Boolean);
+    if(vals.length && vals.every(v => /^(true|false|yes|no|ja|nein|foil|normal|cold|x|)$/i.test(v))){ iVar = iFoilCount; foilCountCol = -1; }
+  }
   const out = [], bad = [];
   for(const r of rows.slice(1)){
     let c = null;
-    const setv = iSet >= 0 ? String(r[iSet] || '').trim().replace(/^0+(\d)/, '$1') : '';
+    const setv = iSet >= 0 ? setCodeFrom(r[iSet]) : '';
     const numv = iNum >= 0 ? String(r[iNum] || '').trim() : '';
     if(setv && numv){
-      const n = parseInt(numv, 10), v = (numv.match(/[a-e]$/i) || [''])[0].toLowerCase();
+      const n = parseInt(numv, 10), v = (numv.match(/^\d+([a-e])\b/i) || ['', ''])[1].toLowerCase();
       const arr = S.cards.filter(x => x.s === setv && x.n === n);
       c = arr.find(x => (x.v || '') === v) || arr[0] || null;
     }
-    if(!c && iName >= 0){
+    if(!c && iName >= 0 && r[iName]){
       const nm = String(r[iName] || '') + (iVer >= 0 && r[iVer] ? ' - ' + r[iVer] : '');
-      const f = ENGINE.findByName(nm); if(f && f.length) c = ENGINE.preferPrinting(f);
+      const f = ENGINE.findByName(nm);
+      if(f && f.length) c = (setv && f.find(x => x.s === setv)) || ENGINE.preferPrinting(f);
     }
-    if(!c){ bad.push(r.join(', ')); continue; }
+    if(!c){ if(r.some(x => String(x).trim())) bad.push(r.join(', ')); continue; }
     const lv = iLang >= 0 ? ENGINE.norm(r[iLang]) : '';
     const lang = /^(DE|GER|DEUTSCH)/.test(lv) ? 'de' : /^(EN|ENG)/.test(lv) ? 'en' : /^(FR|FRA)/.test(lv) ? 'fr' : /^(IT|ITA)/.test(lv) ? 'it' : S.settings.defaultLang;
-    const cnt = iCount >= 0 ? parseInt(r[iCount], 10) : 1;
+    const cntRaw = iCount >= 0 ? parseInt(r[iCount], 10) : 1;
+    const cnt = isNaN(cntRaw) ? (iCount >= 0 ? 0 : 1) : cntRaw;
     const vv = iVar >= 0 ? ENGINE.norm(r[iVar]) : '';
-    const isFoil = !!vv && !/NON|NORMAL|REGULAR|FALSE|NO|NEIN|^0$/.test(vv) && /FOIL|COLD|TRUE|YES|JA|^1$/.test(vv);
-    if(iFoilCount >= 0){
-      const fc = parseInt(r[iFoilCount], 10) || 0;
+    const isFoil = !!vv && !/NON|NORMAL|REGULAR|FALSE|^NO$|NEIN|^0$/.test(vv) && /FOIL|COLD|TRUE|YES|JA|^1$|^X$/.test(vv);
+    if(foilCountCol >= 0){
+      const fc = parseInt(r[foilCountCol], 10) || 0;
       if(cnt > 0) out.push({c, lang, foil:false, n:cnt});
       if(fc > 0) out.push({c, lang, foil:true, n:fc});
-    } else if(!isNaN(cnt) && cnt > 0) out.push({c, lang, foil:isFoil, n:cnt});
+    } else if(cnt > 0) out.push({c, lang, foil:isFoil, n:cnt});
   }
+  return {out, bad};
+}
+A['csv-import'] = async () => {
+  const t = await pickFile('.csv,.txt,text/csv,text/plain'); if(!t) return;
+  const {out, bad} = parseCardFile(t);
   if(!out.length){ toast('Keine Karten erkannt – Format unbekannt', 4000); return; }
   const total = out.reduce((s, x) => s + x.n, 0);
   const mode = await ask('CSV importieren', `${total} Karten erkannt${bad.length ? `, ${bad.length} Zeile(n) nicht zugeordnet` : ''}. Wie soll ich sie übernehmen?`,
