@@ -13,6 +13,29 @@ function openSheet(html, onClose=null){ $('#sheet').innerHTML = html; $('#sheet'
 function closeSheet(){ if(!$('#sheet-wrap').classList.contains('open')) return; $('#sheet-wrap').classList.remove('open'); const f = sheetOnClose; sheetOnClose = null; if(f) f(); }
 function sheetOpen(){ return $('#sheet-wrap').classList.contains('open'); }
 A['sheet-close'] = closeSheet;
+/* Sheet nach unten wischen (oder auf den Griff oben tippen) schließt es */
+(function(){
+  const sh = $('#sheet'); let y0 = null, dy = 0, drag = false;
+  sh.addEventListener('touchstart', e => {
+    const t = e.touches[0], top = sh.getBoundingClientRect().top;
+    if(sh.scrollTop > 0 && t.clientY - top > 50){ y0 = null; return; }
+    y0 = t.clientY; dy = 0; drag = false;
+  }, {passive:true});
+  sh.addEventListener('touchmove', e => {
+    if(y0 == null) return;
+    dy = e.touches[0].clientY - y0;
+    if(dy > 6 && sh.scrollTop <= 0){ drag = true; sh.style.transition = 'none'; sh.style.transform = `translateY(${dy}px)`; if(e.cancelable) e.preventDefault(); }
+    else if(dy < 0 && drag){ sh.style.transform = ''; }
+  }, {passive:false});
+  const end = () => {
+    if(y0 == null) return;
+    sh.style.transition = ''; sh.style.transform = '';
+    if(drag && dy > 80) closeSheet();
+    y0 = null; drag = false;
+  };
+  sh.addEventListener('touchend', end); sh.addEventListener('touchcancel', end);
+  sh.addEventListener('click', e => { if(e.target === sh && e.clientY - sh.getBoundingClientRect().top < 28) closeSheet(); });
+})();
 
 function ask(title, text, buttons){
   return new Promise(res => {

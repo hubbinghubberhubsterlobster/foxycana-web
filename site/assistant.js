@@ -230,7 +230,7 @@ const ASSIST = (() => {
       }
     }
     if(count < N) for(const p of pool){ if(count >= N) break; const have = (deck.get(p.g.key) || {n:0}).n; add(p, Math.min(lim(p) - have, N - count)); }
-    if(count < N && !POOLQ) for(const p of pool){ if(count >= N) break; if(p.sc < -0.2) continue; const have = (deck.get(p.g.key) || {n:0}).n; add(p, Math.min(p.max - have, N - count)); }
+    if(count < N && !POOLQ && !opt.noBuy) for(const p of pool){ if(count >= N) break; if(p.sc < -0.2) continue; const have = (deck.get(p.g.key) || {n:0}).n; add(p, Math.min(p.max - have, N - count)); }
     let ink = 0; for(const x of deck.values()) if(x.p.g.rep.ink) ink += x.n;
     let guard = 0;
     while(ink < INKMIN && guard++ < 40){
@@ -368,7 +368,7 @@ const ASSIST = (() => {
     else if(best) metaS = 0.4;
     let score = 100 * (0.75 * quality + 0.25 * metaS);
     const want = d.size || (d.pool ? 40 : 60); if(n < want) score -= (want - n) * 0.5;
-    if(illegal) score -= illegal * 0.5;
+    if(illegal && st.tourney) score -= illegal * 0.3;
     if(inks.size > 2) score -= 15;
     score = Math.max(0, Math.round(score));
     const tier = score >= 72 ? 'S' : score >= 63 ? 'A' : score >= 54 ? 'B' : score >= 45 ? 'C' : 'D';
@@ -382,11 +382,11 @@ const ASSIST = (() => {
   const TC = {S:'#F5D58E', A:'#3CCB7F', B:'#1C8FD6', C:'#9A9CB8', D:'#FF6B6B'};
   function chips(name, opts, cur){ return `<div class="chips" style="flex-wrap:wrap">${opts.map(([v, l]) => `<button class="chip ${cur === v ? 'on' : ''}" data-act="as-set" data-k="${name}" data-v="${esc(v)}">${esc(l)}</button>`).join('')}</div>`; }
   function stars(q){ const n = Math.max(1, Math.min(5, Math.round(q * 6.5 - 0.5))); return '★'.repeat(n) + '☆'.repeat(5 - n); }
-  function collKey(){ return (st.pool || '') + ':' + st.size + ':' + (st.pool && bundleById(st.pool) ? bundleStats(bundleById(st.pool)).total : 0) + ':' + Object.values(S.coll).reduce((s, e) => s + e.q, 0) + ':' + Object.keys(S.coll).length + ':' + Object.keys(S.prices).length; }
+  function collKey(){ return (st.tourney ? 'core' : 'inf') + ':' + (st.pool || '') + ':' + st.size + ':' + (st.pool && bundleById(st.pool) ? bundleStats(bundleById(st.pool)).total : 0) + ':' + Object.values(S.coll).reduce((s, e) => s + e.q, 0) + ':' + Object.keys(S.coll).length + ':' + Object.keys(S.prices).length; }
   // Wie vollständig ist das Deck? (fehlende Karten im Besitz/Bundle und Karten, die gar nicht gefunden wurden)
   function shortNote(r){
     const N = r.size || 60, short = Math.max(0, N - r.total), miss = r.total - r.ownedCopies, src = st.pool ? 'aus dem Bundle' : 'hast du';
-    if(short) return `<div class="miss" style="margin-top:6px">⚠️ Nur ${r.total}/${N} Karten möglich – ${short} fehlen, ${st.pool ? 'das Bundle hat zu wenige Karten in diesen Farben' : 'zu wenige passende Karten'}. So nicht spielbar.</div>`;
+    if(short) return `<div class="miss" style="margin-top:6px">⚠️ Nur ${r.total}/${N} Karten möglich – ${short} fehlen, ${st.pool ? 'das Bundle hat zu wenige Karten in diesen Farben' : 'du hast in diesen Farben noch nicht genug Karten'}.</div>`;
     return `<div class="tiny muted" style="margin-top:6px">${r.ownedCopies}/${N} Karten ${src}${miss ? ` · <span class="miss">${miss} fehlen${st.pool ? ' im Bundle' : ` (ca. ${money(r.missCost)})`}</span>` : ' · <span style="color:var(--good)">komplett spielbar ✓</span>'}</div>`;
   }
   function resultCard(r, i, act){
@@ -396,8 +396,12 @@ const ASSIST = (() => {
       <div class="grow"><div class="row" style="gap:6px">${inkDot(r.pair[0])}${inkDot(r.pair[1])}<b>${esc(pairLabel(r.pair))}</b></div>
         ${rt.arche ? `<div class="tiny" style="color:var(--gold2);margin-top:2px">≈ Meta-Deck „${esc(rt.arche.name)}“</div>` : ''}
         <div class="row wrap" style="gap:4px;margin-top:6px">${features(a).map(f => `<span class="tag">${esc(f)}</span>`).join('')}</div>
-        ${shortNote(r)}</div><span class="muted">›</span></button>`;
+        ${shortNote(r)}${rt.illegal && st.tourney ? `<div class="tiny" style="color:var(--gold2);margin-top:3px">ℹ️ ${rt.illegal} Karten nicht Core-legal – fürs Spielen mit Freunden kein Problem, für Turniere schon</div>` : ''}</div><span class="muted">›</span></button>`;
   }
+  function tourneySwitch(){
+    return `<label class="switch-row"><input type="checkbox" data-act="as-tourney" ${st.tourney ? 'checked' : ''}><span class="switch"></span><span class="small"><b>Turnierspielbar</b> <span class="tiny muted">${st.tourney ? '– nur Karten aus Sets, die im Core-Format erlaubt sind' : '– aus: alle deine Editionen, einfach zum Spaß spielen'}</span></span></label>`;
+  }
+  A['as-tourney'] = () => { st.tourney = !st.tourney; st.best = null; st.recs = null; render(); };
   const FILTERS = [['best','⭐ Beste insgesamt'],['tier','🏅 Nach Stufe'],['ready','✓ Sofort spielbar'],['aggro','⚡ Aggro'],['midrange','⚖️ Midrange'],['control','🛡️ Kontrolle']];
   function render(){
     if(!S.cards.length) return;
@@ -411,6 +415,8 @@ const ASSIST = (() => {
         <label class="lbl">Deckgröße</label>${chips('size', [['40','40 Karten (Sealed)'],['60','60 Karten']], String(st.size))}</div>` : ''}
 
       <h2 style="margin-top:4px">💡 Empfehlungen ${PB ? 'aus dem Bundle' : 'aus deinen Karten'}</h2>
+      ${PB ? '' : tourneySwitch()}
+      <p class="tiny muted" style="margin:-2px 0 8px">Nur mit Karten, die du ${PB ? 'im Bundle' : ''} hast – Foxycana baut daraus das Beste, was geht.</p>
       <div class="chips" style="margin-bottom:10px">${FILTERS.map(([k, l]) => `<button class="chip ${st.filter === k ? 'on' : ''}" data-act="as-filter" data-f="${k}">${l}</button>`).join('')}</div>
       <div id="as-best">${recHtml() || '<div class="boot" style="min-height:90px"><div class="loader" style="width:28px;height:28px"></div><span class="small muted">Foxycana probiert alle Farben und Spielstile durch …</span></div>'}</div>
 
@@ -428,7 +434,7 @@ const ASSIST = (() => {
         <div class="tiny muted" style="margin-top:4px">Eine Sache pro Zeile oder mit Komma. Kartennamen kommen auf jeden Fall rein. „viele …“/„muss …“ = vorgeben, „keine …“/„ohne …“ = vermeiden.</div>
         ${st.wishInfo ? `<div class="tiny" style="margin-top:6px">${st.wishInfo}</div>` : ''}
         ${PB ? '' : `<label class="lbl">Karten</label>${chips('mode', [['owned','Nur meine Karten'],['best','Bestes Deck (mit Kauftipps)']], st.mode)}
-        <label class="lbl">Format</label>${chips('format', [['core','Core (aktuelle Sets)'],['infinity','Infinity (alle Sets)']], st.format)}`}
+`}
         <button class="btn block" style="margin-top:16px" data-act="as-run">Decks bauen</button>
       </div>
       ${PB ? '' : `<button class="btn ghost block" style="margin-top:12px" data-act="meta-open">🏆 Was spielen Turnierspieler gerade? (Meta-Decks)</button>`}
@@ -441,10 +447,10 @@ const ASSIST = (() => {
   function computeBest(){
     if(S.ui.assist !== 'wizard') return;
     ensure();
-    const fmt = st.pool ? 'infinity' : st.format, out = [];
+    const fmt = st.pool || !st.tourney ? 'infinity' : 'core', out = [];
     for(const style of ['aggro', 'midrange', 'control']){
       for(const p of PAIRS){
-        const r = buildDeck(p, {style, prefs:{}, pins:[], format: fmt, mode:'owned', size: st.size});
+        const r = buildDeck(p, {style, prefs:{}, pins:[], format: fmt, mode:'owned', size: st.size, noBuy: true});
         if(r.total < (st.size || 60) * 0.5) continue;
         r.style = style;   // Spielstil, für den das Deck gebaut wurde
         r.rank = rank(r, 'owned');
@@ -535,7 +541,7 @@ const ASSIST = (() => {
   /* ---------- Aktionen ---------- */
   function busy(text){ view.innerHTML = `<div class="boot" style="min-height:50vh"><div class="loader"></div>${esc(text)}</div>`; }
   A['assist-open'] = () => { if(st.pool){ st.pool = null; st.size = 60; st.best = null; st.recs = null; st.mode = 'owned'; } go({tab:'decks', deck:null, assist:'wizard'}); if(!META) loadMeta().then(() => { if(S.ui.assist === 'wizard') render(); }); };
-  A['as-set'] = el => { st[el.dataset.k] = el.dataset.k === 'size' ? +el.dataset.v : el.dataset.v; if(el.dataset.k === 'size' || el.dataset.k === 'format'){ st.best = null; st.recs = null; } if(el.dataset.k === 'format'){ META = null; st.best = null; st.metaHave = null; } render(); };
+  A['as-set'] = el => { st[el.dataset.k] = el.dataset.k === 'size' ? +el.dataset.v : el.dataset.v; if(['size', 'format', 'recFormat'].includes(el.dataset.k)){ st.best = null; st.recs = null; } if(el.dataset.k === 'format'){ META = null; st.best = null; st.metaHave = null; } render(); };
   A['as-ink'] = el => { const k = el.dataset.ink; st.inks = st.inks.includes(k) ? st.inks.filter(x => x !== k) : [...st.inks, k].slice(-2); render(); };
   A['as-pref'] = el => { const k = el.dataset.k, order = [undefined, 'rec', 'req', 'avoid']; const nx = order[(order.indexOf(st.prefs[k]) + 1) % 4]; if(nx) st.prefs[k] = nx; else delete st.prefs[k]; const y = window.scrollY; render(); window.scrollTo(0, y); };
   A['as-run'] = () => {
@@ -550,7 +556,7 @@ const ASSIST = (() => {
     const parts = [STYLES[st.style].de, ...Object.entries(prefs).filter(([, m]) => m !== 'avoid').map(([k]) => prefLabel(k))];
     st.title = parts.join(' · ');
     busy('Baue Decks aus deinen Karten …');
-    setTimeout(() => { st.results = runWith({style: st.style, prefs, pins: wish.pins, format: st.pool ? 'infinity' : st.format, mode: st.pool ? 'owned' : st.mode, size: st.size}, st.inks, st.inks.length === 2 ? 1 : 3); st.sel = 0; go({assist:'results'}); }, 30);
+    setTimeout(() => { st.results = runWith({style: st.style, prefs, pins: wish.pins, format: st.pool || !st.tourney ? 'infinity' : 'core', mode: st.pool ? 'owned' : st.mode, size: st.size}, st.inks, st.inks.length === 2 ? 1 : 3); st.sel = 0; go({assist:'results'}); }, 30);
   };
   A['as-filter'] = el => { st.filter = el.dataset.f; $$('[data-act="as-filter"]').forEach(b => b.classList.toggle('on', b === el)); const b = $('#as-best'); if(b && st.recs) b.innerHTML = recHtml(); };
   A['meta-open'] = () => { if(st.pool){ st.pool = null; st.size = 60; } go({tab:'more', deck:null, bundle:null, assist:'meta'}); };
