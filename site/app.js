@@ -68,7 +68,7 @@ function render(){
   else if(t === 'sets') renderSets();
   else if(t === 'decks') S.ui.assist ? ASSIST.render() : S.ui.deck ? renderDeck() : renderDecks();
   else if(t === 'bundles') S.ui.assist ? ASSIST.render() : S.ui.deck ? renderDeck() : S.ui.bundle ? renderBundle() : renderBundles();
-  else renderMore();
+  else S.ui.assist ? ASSIST.render() : renderMore();
 }
 
 /* =========================================================
@@ -413,7 +413,7 @@ function renderDecks(){
       ${st.missing ? `<div class="miss">${st.missing} fehlen${st.inOther ? ` · ${st.inOther} in anderen Decks` : ''}${st.buy ? ` · ${st.buy} nicht im Besitz` : ''}</div>` : st.count ? '<div class="tiny" style="color:var(--good)">✓ Spielbereit</div>' : ''}</div>
       <div style="text-align:right"><div class="gold small">${money(st.value)}</div>${r ? `<div class="tiny muted">#${i + 1}</div>` : ''}</div></button>`; }).join('');
   view.innerHTML = `<div class="row">${backBtn()}<h1 class="grow">Decks</h1></div>
-    <button class="deck-item assist-cta" data-act="assist-open"><span style="font-size:26px">✨</span><div class="grow"><b style="display:block">Deck-Assistent</b><span class="tiny muted">Baut die stärksten Decks aus deinen Karten und zeigt, was gerade in der Meta stark ist</span></div><span class="muted">›</span></button>
+    <button class="deck-item assist-cta" data-act="assist-open"><span style="font-size:26px">✨</span><div class="grow"><b style="display:block">Deckbuilder</b><span class="tiny muted">Empfehlungen aus deinen Karten – nach Stärke, Stufe oder Spielstil – oder selbst bauen</span></div><span class="muted">›</span></button>
     <div class="row" style="gap:8px;margin-bottom:14px"><button class="btn grow" data-act="prebuilt">🛍️ Fertigdeck gekauft</button><button class="btn ghost" data-act="deck-new">+ Neu</button></div>
     ${list ? `<div class="row between" style="margin:4px 0 8px"><b>Meta-Ranking deiner Decks</b><button class="chip" data-act="rank-info">?</button></div>` + list : ''}${list ? '' : `<div class="empty"><div class="icon">🃏</div><b>Noch keine Decks</b><p>Hast du ein Starterdeck gekauft? Tipp auf <b>Fertigdeck gekauft</b> – alle 60 Karten landen sofort in deiner Sammlung.</p></div>`}
     <button class="btn ghost block" data-act="deck-import" style="margin-top:6px">Deckliste einfügen (Text)</button>
@@ -435,7 +435,8 @@ function renderDeck(){
     .sort((a, b) => (a.c.ct ?? 0) - (b.c.ct ?? 0) || cName(a.c).localeCompare(cName(b.c), 'de'));
   const groups = {}; for(const x of cards){ (groups[x.c.t] = groups[x.c.t] || []).push(x); }
   const warn = [];
-  if(st.count && st.count < 60) warn.push(`Noch ${60 - st.count} Karten bis 60`);
+  const WANT = d.size || (d.pool ? 40 : 60);
+  if(st.count < WANT) warn.push(`Noch ${WANT - st.count} Karten bis ${WANT} – so ist das Deck nicht spielbar`);
   if(st.inks.length > 2) warn.push('Mehr als 2 Tintenfarben');
   for(const x of cards){ const max = x.c.max === undefined ? 4 : x.c.max; if(max != null && x.n > max) warn.push(`${cName(x.c)}: höchstens ${max}×`); }
   view.innerHTML = `
@@ -487,8 +488,20 @@ A['deck-add'] = () => {
   }, st.inks.length >= 2 ? st.inks : null);
 };
 A['deck-rename'] = async () => { const d = currentDeck(); const n = await promptText('Deck umbenennen', d.name); if(n){ d.name = n; persist(); renderDeck(); } };
+/* Bundle-Deck als normales Deck (aus der Sammlung) kopieren */
+function copyToNormal(d){
+  const n = {id:'d' + Date.now() + Math.floor(Math.random() * 1000), name: d.name, cards: Object.assign({}, d.cards), src:'copy', created: Date.now(), size: 60};
+  S.decks.unshift(n); persist(); return n;
+}
+A['deck-tonormal'] = () => {
+  const d = currentDeck(); closeSheet(); if(!d) return;
+  const n = copyToNormal(d);
+  toast(`„${n.name}“ ist jetzt auch unter Decks – mit den Karten aus deiner Sammlung`, 3500);
+  go({tab:'decks', bundle:null, assist:null, deck: n.id});
+};
 A['deck-menu'] = () => {
   openSheet(`<h2>Deck</h2><div class="list">
+    ${currentDeck().pool ? `<button class="item" style="width:100%" data-act="deck-tonormal">🃏 Auch zu meinen Decks hinzufügen</button>` : ''}
     <button class="item" style="width:100%" data-act="deck-copy">📋 Als Text kopieren</button>
     <button class="item" style="width:100%" data-act="deck-missing">🛒 Fehlende Karten anzeigen</button>
     <button class="item" style="width:100%" data-act="deck-tocoll">➕ Alle Deckkarten zur Sammlung hinzufügen</button>
@@ -627,6 +640,7 @@ function renderMore(){
       <label class="lbl">Erkennung</label>${sel('confirm', [['1','Schnell (1 Bild)'],['2','Sicher (2 Bilder, empfohlen)'],['3','Sehr sicher (3 Bilder)']], s.confirm)}
       <label class="lbl">Ausrichtung der Karte zur Kamera</label>${sel('rotation', [['auto','Automatisch'],['0','0°'],['90','90°'],['180','180°'],['270','270°']], s.rotation)}
       <label class="lbl">Rückmeldung</label>${sel('feedback', [['both','Ton + Vibration'],['sound','Nur Ton'],['vib','Nur Vibration'],['none','Aus']], s.sound && s.vibrate ? 'both' : s.sound ? 'sound' : s.vibrate ? 'vib' : 'none')}</div>
+    <button class="deck-item" style="margin-top:12px" data-act="meta-open"><span style="font-size:24px">🏆</span><div class="grow"><b style="display:block">Meta-Decks</b><span class="tiny muted">Was Turnierspieler gerade spielen – mit Anteil und Siegquote</span></div><span class="muted">›</span></button>
     <div class="card" style="margin-top:12px"><h3 style="margin-top:0">Daten</h3>
       <div class="list small">
         <div class="item"><div class="grow">Kartendatenbank<div class="tiny muted">${S.cards.length} Karten · Stand ${fmtDate(S.cardsDate)}</div></div><button class="btn small ghost" data-act="upd-cards">Aktualisieren</button></div>
