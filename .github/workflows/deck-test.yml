@@ -1,0 +1,19 @@
+name: Deckbuilder-Test
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [test-deck]
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Daten vorbereiten
+        run: node tools/build-data.mjs site site/data
+      - name: Decks testen
+        run: node tools/deck-test.mjs site site/data
