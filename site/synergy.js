@@ -32,7 +32,8 @@ const SYN = (() => {
   function hostile(t, idx){ const pre = t.slice(Math.max(0, idx - 28), idx); return /opposing|opponent|chosen (?:opposing )?$|banish|damaged? to/.test(pre); }
 
   function tagsOf(c){
-    const t = ((c.txt && c.txt.en) || '').toLowerCase().replace(/\s+/g, ' ');
+    // Erinnerungstext in Klammern ignorieren – z. B. "(Only characters with Evasive can challenge …)" ist keine Synergie
+    const t = ((c.txt && c.txt.en) || '').toLowerCase().replace(/\([^)]*\)/g, ' ').replace(/\s+/g, ' ');
     const has = new Set(), wants = new Map();
     const want = (tag, w) => { if((wants.get(tag) || 0) < w) wants.set(tag, w); };
     for(const x of (c.sub || [])) if(!SKIP_SUB.has(x)) has.add('sub:' + x);
@@ -56,13 +57,13 @@ const SYN = (() => {
     // Gegenstände
     if(/\b(your items?|an item|items? you have|for each item|play an item|item cards?|another item|other items?)\b/.test(t) && !/(chosen|opposing) item/.test(t)) want('item', 1);
     // Orte
-    if(/\bmove\b|\bmoves\b|at a location|while here|your locations?|locations? you have|play a location|to a location|another location/.test(t)) want('location', 1);
+    if(c.t !== 'Location' && /\bmove\b|\bmoves\b|at a location|your locations?|locations? you have|play a location|to a location|another location/.test(t)) want('location', 1);
     // Lieder
     if(c.t !== 'Action' && /\b(sing|sings|sung|play a song|song cards?|a song)\b/.test(t)) want('song', 1);
     if(has.has('singer')) want('song', 0.7);
     if(has.has('song')) want('singer', 0.4);
     // Schaden
-    if(/\bdamaged\b|with damage|has damage|for each damage|damage on (it|them|this)/.test(t)) want('damage', 0.8);
+    if(/(your|an opponent has a|opponents? have a) damaged|for each damage|damage on (it|them|this)/.test(t)) want('damage', 0.6);
     // Gestaltwandel: braucht eine andere Version mit gleichem Namen
     if((c.kw || []).some(k => kwBase(k) === 'Shift') || /\bshift \d/.test(t)) want('name:' + ENGINE.norm(c.name.en), 1);
     // "named X"

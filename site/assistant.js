@@ -263,7 +263,9 @@ const ASSIST = (() => {
     const curveFit = Math.max(0, 1 - dev / (1.2 * N));
     const inkFit = Math.min(1, ink / (0.72 * N));
     const coherent = Math.max(0, 1 - ev.orphanShare * 2.5);
-    return 0.36 * quality + 0.34 * ev.synergy + 0.12 * coherent + 0.1 * curveFit + 0.08 * inkFit;
+    // Beständigkeit: lieber 3–4 Exemplare weniger Karten als viele Einzelstücke
+    const uniq = lines.filter(l => l.n > 0).length || 1, cons = Math.max(0, Math.min(1, (total / uniq - 1.2) / 2));
+    return 0.32 * quality + 0.3 * ev.synergy + 0.12 * coherent + 0.1 * cons + 0.08 * curveFit + 0.08 * inkFit;
   }
   function rank(r, mode){ const N = r.size || 60, full = Math.min(1, r.total / N); const base = mode === 'owned' ? r.score * 0.75 + (r.ownedCopies / N) * 0.25 : r.score; return base * full * full; }
   function runWith(opt, inks, n){
