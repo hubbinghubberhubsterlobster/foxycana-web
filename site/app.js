@@ -813,10 +813,47 @@ function autoBackup(force){
   return r;
 }
 A['backup-now'] = () => { abDirty = true; const r = autoBackup(true); if(!NATIVE){ A['backup-export'](); return; } if(!r){ toast('Nichts zu sichern – Sammlung ist leer'); return; } toast(String(r).startsWith('ERR:') ? 'Fehler: ' + r.slice(4) : 'Backup gespeichert in ' + r, 3500); renderMore(); };
+/* Bytes → Text: UTF-8 (mit/ohne BOM), UTF-16 (Excel "Unicode-Text") oder Windows-1252 (Excel-CSV unter Windows) */
+function decodeBytes(u8){
+  if(u8[0] === 0xFF && u8[1] === 0xFE) return new TextDecoder('utf-16le').decode(u8.subarray(2));
+  if(u8[0] === 0xFE && u8[1] === 0xFF) return new TextDecoder('utf-16be').decode(u8.subarray(2));
+  if(u8[0] === 0xEF && u8[1] === 0xBB && u8[2] === 0xBF) u8 = u8.subarray(3);
+  // UTF-16 ohne BOM: viele Nullbytes
+  let zeros = 0; for(let i = 1; i < Math.min(u8.length, 400); i += 2) if(u8[i] === 0) zeros++;
+  if(zeros > 100) return new TextDecoder('utf-16le').decode(u8);
+  try{ return new TextDecoder('utf-8', {fatal:true}).decode(u8); }
+  catch(e){ try{ return new TextDecoder('windows-1252').decode(u8); }catch(e2){ return new TextDecoder('utf-8').decode(u8); } }
+}
+/* Datei wählen und als Text lesen. In der Android-App über die native Dateiauswahl (zuverlässiger, alle Dateitypen wählbar). */
+let pickSeq = 0;
 function pickFile(accept){
+  if(NATIVE && typeof NATIVE.pickFile === 'function'){
+    return new Promise(res => {
+      const id = 'f' + (++pickSeq);
+      window.__nativeFile = (rid, b64, name, err) => {
+        if(rid !== id) return;
+        window.__nativeFile = null;
+        if(!b64){ if(err) toast('Datei konnte nicht gelesen werden: ' + err, 4500); return res(null); }
+        try{
+          const bin = atob(b64); const u8 = new Uint8Array(bin.length);
+          for(let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+          pickFile.lastName = name || '';
+          res(decodeBytes(u8));
+        }catch(e){ toast('Datei konnte nicht gelesen werden', 4000); res(null); }
+      };
+      NATIVE.pickFile(id);
+    });
+  }
   return new Promise(res => {
-    const f = $('#file-in'); f.value = ''; f.accept = accept || '';
-    f.onchange = () => { const file = f.files && f.files[0]; if(!file) return res(null); const r = new FileReader(); r.onload = () => res(String(r.result)); r.onerror = () => res(null); r.readAsText(file); };
+    const f = $('#file-in'); f.value = ''; f.removeAttribute('capture'); f.accept = accept || '';
+    f.onchange = () => {
+      const file = f.files && f.files[0]; if(!file) return res(null);
+      pickFile.lastName = file.name || '';
+      const r = new FileReader();
+      r.onload = () => res(decodeBytes(new Uint8Array(r.result)));
+      r.onerror = () => { toast('Datei konnte nicht gelesen werden', 4000); res(null); };
+      r.readAsArrayBuffer(file);
+    };
     f.click();
   });
 }
@@ -845,6 +882,7 @@ function setCodeFrom(v){
   return '';
 }
 function parseCardFile(t){
+  t = String(t || '').replace(/^\uFEFF/, '').replace(/^\s*sep=.?\s*\r?\n/i, '');
   const rows = ENGINE.parseCSV(t);
   const head = rows[0] || [];
   // Keine Tabelle (nur eine Spalte) → als Textliste lesen
@@ -899,17 +937,69 @@ function parseCardFile(t){
   }
   return {out, bad};
 }
-A['csv-import'] = async () => {
-  const t = await pickFile('.csv,.txt,text/csv,text/plain'); if(!t) return;
-  const {out, bad} = parseCardFile(t);
-  if(!out.length){ toast('Keine Karten erkannt – Format unbekannt', 4000); return; }
+/* CSV / Kartenliste importieren: Datei wählen ODER Inhalt einfügen → Vorschau → Hinzufügen oder Sammlung ersetzen */
+A['csv-import'] = () => {
+  window.__ci = {mode: 'add'};
+  openSheet(`<h2>Sammlung importieren</h2>
+    <p class="muted small">CSV aus Foxycana, Lorcery, Dreamborn & Co. oder eine Textliste (<code>4 Elsa - Snow Queen</code>). Spalten wie Set, Nummer, Anzahl, Foil und Sprache werden automatisch erkannt.</p>
+    <button class="btn block" data-act="ci-file">📄 Datei auswählen</button>
+    <details style="margin-top:10px"><summary class="small">… oder Inhalt einfügen</summary>
+      <textarea class="field" id="ci-text" style="min-height:120px;margin-top:8px" placeholder="Set Number,Card Number,Variant,Count,…&#10;oder&#10;4 Elsa - Snow Queen"></textarea>
+      <button class="btn ghost block" style="margin-top:8px" data-act="ci-text">Eingefügten Text prüfen</button></details>
+    <div class="actions"><button class="btn ghost" data-act="sheet-close">Abbrechen</button></div>`);
+};
+A['ci-file'] = async () => {
+  const t = await pickFile('.csv,.txt,.tsv,text/csv,text/plain');
+  if(t == null){ return; }
+  ciPreview(t, pickFile.lastName);
+};
+A['ci-text'] = () => { const t = ($('#ci-text') || {}).value || ''; if(!t.trim()){ toast('Erst Text einfügen'); return; } ciPreview(t, ''); };
+async function ciPreview(t, fname){
+  openSheet(`<div class="boot" style="min-height:200px"><div class="loader"></div>Lese ${esc(fname || 'Liste')} …</div>`);
+  await new Promise(r => setTimeout(r, 30));
+  let res;
+  try{ res = parseCardFile(t); }
+  catch(e){ console.error(e); res = {out: [], bad: [], err: String(e && e.message || e)}; }
+  const {out, bad} = res;
   const total = out.reduce((s, x) => s + x.n, 0);
-  const mode = await ask('CSV importieren', `${total} Karten erkannt${bad.length ? `, ${bad.length} Zeile(n) nicht zugeordnet` : ''}. Wie soll ich sie übernehmen?`,
-    [{l:'Zur Sammlung hinzufügen', v:'add'}, {l:'Sammlung ersetzen', v:'replace', c:'ghost'}, {l:'Abbrechen', v:null, c:'ghost'}]);
-  if(!mode) return;
-  if(mode === 'replace') S.coll = {};
-  for(const x of out) addCard(x.c.id, x.lang, x.foil, x.n);
-  await saveNow(); toast(`${total} Karten importiert ✓`, 3000); render();
+  const uniq = new Set(out.map(x => x.c.id)).size;
+  const value = out.reduce((s, x) => s + (priceEUR(x.c, x.foil) || 0) * x.n, 0);
+  const foils = out.filter(x => x.foil).reduce((s, x) => s + x.n, 0);
+  const langs = {}; for(const x of out) langs[x.lang] = (langs[x.lang] || 0) + x.n;
+  window.__ci = {out, total, mode: (window.__ci && window.__ci.mode) || 'add'};
+  if(!out.length){
+    const first = t.split(/\r?\n/).find(l => l.trim()) || '';
+    openSheet(`<h2>Keine Karten erkannt</h2><p class="muted small">${res.err ? 'Fehler: ' + esc(res.err) + '<br><br>' : ''}Ich konnte in ${esc(fname || 'der Liste')} keine Karte zuordnen. Erste Zeile der Datei:</p>
+      <pre class="tiny" style="white-space:pre-wrap;background:var(--surface);padding:8px;border-radius:8px;max-height:120px;overflow:auto">${esc(first.slice(0, 300))}</pre>
+      <p class="muted small">Prüf, ob die Kartendatenbank aktuell ist (Mehr → Daten). Klappt es trotzdem nicht, schick mir die Datei – dann baue ich das Format ein.</p>
+      <div class="actions"><button class="btn ghost" data-act="csv-import">Zurück</button><button class="btn" data-act="sheet-close">OK</button></div>`);
+    return;
+  }
+  const cur = entries().reduce((s, e) => s + e.q, 0);
+  openSheet(`<h2>${total} Karten erkannt</h2>
+    <p class="muted small">${uniq} verschiedene · ${foils ? foils + ' Foil · ' : ''}${Object.entries(langs).map(([l, n]) => l.toUpperCase() + ' ' + n).join(' · ')} · Wert ca. <b class="gold">${money(value)}</b></p>
+    ${bad.length ? `<details class="small" style="margin-bottom:10px"><summary style="color:var(--bad)">${bad.length} Zeile(n) nicht zugeordnet</summary><div class="tiny muted" style="max-height:160px;overflow:auto;margin-top:6px">${bad.slice(0, 200).map(esc).join('<br>')}${bad.length > 200 ? '<br>…' : ''}</div></details>` : ''}
+    <label class="lbl">Wie übernehmen?</label>
+    <div class="seg" id="ci-mode"><button class="${window.__ci.mode === 'add' ? 'on' : ''}" data-act="ci-mode" data-m="add">Hinzufügen</button><button class="${window.__ci.mode === 'replace' ? 'on' : ''}" data-act="ci-mode" data-m="replace">Sammlung ersetzen</button></div>
+    <p class="tiny muted" id="ci-hint">${ciHint(window.__ci.mode, cur)}</p>
+    <div class="list small" style="max-height:220px;overflow:auto;margin-top:8px">${out.slice(0, 40).map(x => `<div class="item"><span class="gold">${x.n}×</span><div class="grow ell">${esc(cFull(x.c, x.lang))}</div><span class="tiny muted">${esc(x.c.s)}·${x.c.n ?? ''} ${x.lang.toUpperCase()}${x.foil ? ' ✦' : ''}</span></div>`).join('')}${out.length > 40 ? `<div class="tiny muted" style="padding:6px">… und ${out.length - 40} weitere Zeilen</div>` : ''}</div>
+    <div class="actions"><button class="btn ghost" data-act="sheet-close">Abbrechen</button><button class="btn" data-act="ci-go">Importieren</button></div>`);
+}
+function ciHint(m, cur){ return m === 'replace' ? `Deine jetzige Sammlung (${cur} Karten) wird vorher als Backup gesichert und dann komplett durch die Datei ersetzt. Decks bleiben erhalten.` : `Die Karten werden zu deiner Sammlung (${cur} Karten) dazugezählt.`; }
+A['ci-mode'] = el => { window.__ci.mode = el.dataset.m; $$('#ci-mode button').forEach(b => b.classList.toggle('on', b === el)); const h = $('#ci-hint'); if(h) h.textContent = ciHint(el.dataset.m, entries().reduce((s, e) => s + e.q, 0)); };
+A['ci-go'] = async () => {
+  const ci = window.__ci; if(!ci || !ci.out) return;
+  if(ci.mode === 'replace'){
+    if(entries().length){
+      if(NATIVE){ abDirty = true; const r = autoBackup(true); if(r && String(r).startsWith('ERR:')){ const go2 = await ask('Backup fehlgeschlagen', 'Das Sicherheits-Backup konnte nicht gespeichert werden (' + esc(String(r).slice(4)) + '). Trotzdem ersetzen?', [{l:'Abbrechen', v:false, c:'ghost'}, {l:'Trotzdem ersetzen', v:true, c:'danger'}]); if(!go2) return; } }
+      else A['backup-export']();
+    }
+    S.coll = {};
+  }
+  for(const x of ci.out) addCard(x.c.id, x.lang, x.foil, x.n);
+  window.__ci = null;
+  await saveNow(); closeSheet();
+  toast(`${ci.total} Karten ${ci.mode === 'replace' ? 'übernommen – Sammlung ersetzt' : 'hinzugefügt'} ✓`, 3500); render();
 };
 
 /* =========================================================
