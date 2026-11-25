@@ -84,7 +84,8 @@ const ASSIST = (() => {
       list.forEach(g => { if(g.demand == null) g.demand = 0.3; });
     }
     const all = [...GROUPS.values()].sort((a, b) => a.base - b.base);
-    all.forEach((g, i) => { g.basePct = i / Math.max(1, all.length - 1); g.power = 0.45 * g.basePct + 0.55 * g.demand; });
+    all.forEach((g, i) => { g.basePct = i / Math.max(1, all.length - 1); g.power = 0.6 * g.basePct + 0.4 * g.demand; });
+    SYN.prepare(GROUPS);
     POWER = true;
   }
   function refreshOwned(){
@@ -204,55 +205,69 @@ const ASSIST = (() => {
     if(opt.pins && opt.pins.includes(g.key)) s += 5;
     return s;
   }
+  /* Deck bauen: erst ein tragendes Thema suchen (Klassifizierung, Lieder, Gegenstände …),
+     dann Karte für Karte das Beste aus Stärke + Synergie wählen. Karten ohne Partner fliegen raus. */
   function buildDeck(pair, opt){
-    const owned = opt.mode === 'owned', N = opt.size || 60, INKMIN = Math.round(N * 0.73);
+    const owned = opt.mode === 'owned', N = opt.size || 60;
     const target = STYLES[opt.style].curve.map(x => x * N / 60);
-    const pool = [];
+    let pool = [];
     for(const g of GROUPS.values()){
       const inks = inkList(g.rep); if(!inks.length || !inks.every(k => pair.includes(k))) continue;
       if(!g.cards.some(c => setLegal(c.s, opt.format))) continue;
       const max = g.rep.max === undefined ? 4 : (g.rep.max == null ? 4 : Math.min(4, g.rep.max));
+      const pin = !!(opt.pins && opt.pins.includes(g.key));
+      const lim = owned && !pin ? Math.min(max, g.owned) : max;
+      if(lim <= 0 && !(opt.mode !== 'owned')) continue;
       let sc = adjScore(g, opt);
       if(!owned && g.owned) sc += 0.03 * Math.min(4, g.owned);
-      pool.push({g, sc, max});
+      if(sc < -0.3 && !pin) continue;
+      pool.push({g, sc, max, lim: Math.max(0, lim), pin});
     }
-    pool.sort((a, b) => b.sc - a.sc);
-    const deck = new Map(), bucket = Array(8).fill(0); let count = 0;
-    const b = g => Math.min(7, Math.max(1, g.rep.ct || 1));
-    const add = (p, n) => { if(n <= 0) return 0; const cur = deck.get(p.g.key) || {p, n:0}; cur.n += n; deck.set(p.g.key, cur); bucket[b(p.g)] += n; count += n; return n; };
-    const room = (p, slack) => Math.ceil(target[b(p.g)] * slack) - bucket[b(p.g)];
-    const lim = p => owned && !(opt.pins && opt.pins.includes(p.g.key)) ? Math.min(p.max, p.g.owned) : p.max;
-    for(const slack of [1.0, 1.35]){
-      for(const p of pool){
-        if(count >= N) break;
-        const have = (deck.get(p.g.key) || {n:0}).n, L = lim(p);
-        const take = Math.min(L - have, room(p, slack), N - count);
-        if(have === 0 && take < 2 && L >= 2 && slack === 1.0) continue;
-        if(take > 0 && p.sc > 0.25) add(p, take);
-      }
+    if(!owned) pool = pool.sort((a, b) => b.sc - a.sc).slice(0, 260);
+    // mögliche Themen: genug Karten, die es SIND, und einige, die es WOLLEN
+    const hasA = new Map(), wantA = new Map();
+    for(const p of pool){ if(!p.lim) continue; for(const t of p.g.has) if(!t.startsWith('name:')) hasA.set(t, (hasA.get(t) || 0) + p.lim); for(const t of p.g.wants.keys()) if(!t.startsWith('name:')) wantA.set(t, (wantA.get(t) || 0) + p.lim); }
+    const themes = [...wantA.entries()].filter(([t, w]) => w >= 4 && (hasA.get(t) || 0) >= SYN.need(t))
+      .sort((a, b) => (b[1] * 2 + Math.min(24, hasA.get(b[0]))) - (a[1] * 2 + Math.min(24, hasA.get(a[0])))).slice(0, opt.theme ? 0 : 2).map(x => x[0]);
+    const tries = opt.theme ? [opt.theme] : [null, ...themes];
+    let best = null;
+    for(const theme of tries){
+      const p2 = pool.map(p => Object.assign({}, p));
+      const deck = SYN.build(p2, {N, target, theme});
+      const lines = [...deck.values()].map(x => ({g:x.p.g, n:x.n, sc:x.p.sc, miss: Math.max(0, x.n - x.p.g.owned)}));
+      const r = finish(pair, lines, opt, N, pool, deck);
+      r.theme = theme;
+      if(!best || r.score > best.score) best = r;
     }
-    if(count < N) for(const p of pool){ if(count >= N) break; const have = (deck.get(p.g.key) || {n:0}).n; add(p, Math.min(lim(p) - have, N - count)); }
-    if(count < N && !POOLQ && !opt.noBuy) for(const p of pool){ if(count >= N) break; if(p.sc < -0.2) continue; const have = (deck.get(p.g.key) || {n:0}).n; add(p, Math.min(p.max - have, N - count)); }
-    let ink = 0; for(const x of deck.values()) if(x.p.g.rep.ink) ink += x.n;
-    let guard = 0;
-    while(ink < INKMIN && guard++ < 40){
-      const weak = [...deck.values()].filter(x => !x.p.g.rep.ink && !(opt.pins && opt.pins.includes(x.p.g.key))).sort((a, z) => a.p.sc - z.p.sc)[0];
-      const repl = pool.find(p => p.g.rep.ink && (deck.get(p.g.key) || {n:0}).n < (owned && guard < 20 ? Math.min(p.max, p.g.owned) : p.max));
-      if(!weak || !repl) break;
-      weak.n--; bucket[b(weak.p.g)]--; if(!weak.n) deck.delete(weak.p.g.key);
-      const cur = deck.get(repl.g.key) || {p:repl, n:0}; cur.n++; deck.set(repl.g.key, cur); bucket[b(repl.g)]++; ink++;
-    }
-    const lines = [...deck.values()].map(x => ({g:x.p.g, n:x.n, sc:x.p.sc, miss: Math.max(0, x.n - x.p.g.owned)}));
+    return best;
+  }
+  function finish(pair, lines, opt, N, pool, deck){
     const total = lines.reduce((s, x) => s + x.n, 0);
     const ownedCopies = lines.reduce((s, x) => s + (x.n - x.miss), 0);
     const quality = total ? lines.reduce((s, x) => s + x.g.power * x.n, 0) / total : 0;
     const missCost = lines.reduce((s, x) => s + (x.g.price || 0) * x.miss, 0);
+    let ink = 0; for(const x of lines) if(x.g.rep.ink) ink += x.n;
+    const ev = SYN.evaluate(lines, N);
+    const score = composite(quality, ev, lines, N, opt.style);
     const weakest = lines.length ? Math.min(...lines.map(x => x.sc)) : 0;
     const upgrades = pool.filter(p => p.sc > weakest + 0.05 && (deck.get(p.g.key) || {n:0}).n < p.max && p.g.owned < p.max)
-      .slice(0, 10).map(p => ({g:p.g, sc:p.sc}));
-    return {pair, lines, total, ownedCopies, quality, missCost, ink, upgrades: POOLQ ? [] : upgrades, opt, size: N};
+      .sort((a, b) => b.sc - a.sc).slice(0, 10).map(p => ({g:p.g, sc:p.sc}));
+    return {pair, lines, total, ownedCopies, quality, missCost, ink, upgrades: POOLQ ? [] : upgrades, opt, size: N, ev, score};
   }
-  function rank(r, mode){ const N = r.size || 60, full = Math.min(1, r.total / N); const base = mode === 'owned' ? r.quality * 0.6 + (r.ownedCopies / N) * 0.4 : r.quality; return base * full * full; }
+  // Gesamtwert eines Decks (0..1): Kartenstärke, Synergie, keine "Waisen", Kurve, Tinte
+  function composite(quality, ev, lines, N, style){
+    const curve = Array(8).fill(0); let ink = 0, total = 0;
+    for(const x of lines){ curve[Math.min(7, Math.max(1, x.g.rep.ct || 1))] += x.n; if(x.g.rep.ink) ink += x.n; total += x.n; }
+    const tgt = STYLES[style || 'midrange'].curve.map(v => v * N / 60);
+    let dev = 0; for(let i = 1; i < 8; i++) dev += Math.abs(curve[i] - tgt[i]);
+    const curveFit = Math.max(0, 1 - dev / (1.2 * N));
+    const inkFit = Math.min(1, ink / (0.72 * N));
+    const coherent = Math.max(0, 1 - ev.orphanShare * 2.5);
+    // Beständigkeit: lieber 3–4 Exemplare weniger Karten als viele Einzelstücke
+    const uniq = lines.filter(l => l.n > 0).length || 1, cons = Math.max(0, Math.min(1, (total / uniq - 1.2) / 2));
+    return 0.32 * quality + 0.3 * ev.synergy + 0.12 * coherent + 0.1 * cons + 0.08 * curveFit + 0.08 * inkFit;
+  }
+  function rank(r, mode){ const N = r.size || 60, full = Math.min(1, r.total / N); const base = mode === 'owned' ? r.score * 0.75 + (r.ownedCopies / N) * 0.25 : r.score; return base * full * full; }
   function runWith(opt, inks, n){
     ensure();
     let pairs = PAIRS;
@@ -347,15 +362,20 @@ const ASSIST = (() => {
   function rateDeck(d){
     if(!S.cards.length) return null;
     if(!POWER || !GROUPS) buildPower();
-    let n = 0, pw = 0, illegal = 0; const inks = new Set(), cards = [];
+    let n = 0, illegal = 0; const inks = new Set(), cards = [], byKey = new Map();
     for(const [id, k] of Object.entries(d.cards || {})){
       const c = S.byId.get(+id) || S.byId.get(id); if(!c) continue;
-      const g = GROUPS.get(fk(c));
-      n += k; pw += (g ? g.power : 0.3) * k; inkList(c).forEach(x => inks.add(x)); cards.push({c, k});
-      if(!g || !g.cards.some(x => setLegal(x.s, 'core'))) illegal += k;
+      const g = GROUPS.get(fk(c)); if(!g) continue;
+      n += k; inkList(c).forEach(x => inks.add(x)); cards.push({c, k});
+      byKey.set(g.key, {g, n: (byKey.has(g.key) ? byKey.get(g.key).n : 0) + k});
+      if(!g.cards.some(x => setLegal(x.s, 'core'))) illegal += k;
     }
     if(!n) return null;
-    const quality = pw / n;
+    const lines = [...byKey.values()];
+    const quality = lines.reduce((s2, x) => s2 + x.g.power * x.n, 0) / n;
+    const want = d.size || (d.pool ? 40 : 60);
+    const ev = SYN.evaluate(lines, want);
+    const style = analyze(cards.map(x => ({c:x.c, n:x.k}))).style;
     const m = (META && META.list && META.list.length) ? META : META_FALLBACK;
     let best = null;
     if(inks.size <= 2) for(const a of m.list){
@@ -365,17 +385,23 @@ const ASSIST = (() => {
       const val = fit * (a.share + (a.wr ?? 50) / 2);
       if(!best || val > best.val) best = {a, fit, val};
     }
-    let metaS = 0.35;
-    if(best && best.fit === 1) metaS = Math.min(1, (best.a.wr ?? 50) / 100 * 0.7 + Math.min(best.a.share, 25) / 25 * 0.3);
-    else if(best) metaS = 0.4;
-    let score = 100 * (0.75 * quality + 0.25 * metaS);
-    const want = d.size || (d.pool ? 40 : 60); if(n < want) score -= (want - n) * 0.5;
+    let score = 100 * composite(quality, ev, lines, want, style);
+    if(n < want) score -= (want - n) * 0.6;
     if(illegal && (d.tourney ?? st.tourney)) score -= illegal * 0.3;
     if(inks.size > 2) score -= 15;
     score = Math.max(0, Math.round(score));
-    const tier = score >= 72 ? 'S' : score >= 63 ? 'A' : score >= 54 ? 'B' : score >= 45 ? 'C' : 'D';
+    const tier = score >= 74 ? 'S' : score >= 66 ? 'A' : score >= 57 ? 'B' : score >= 48 ? 'C' : 'D';
     const arche = best && best.fit === 1 ? Object.assign({}, best.a, {name: metaNameDe(best.a.name)}) : null;
-    return {score, tier, quality, arche, illegal, count: n, metaDate: m.date, live: !!m.live};
+    return {score, tier, quality, synergy: ev.synergy, orphans: ev.orphans, packages: ev.packages, arche, illegal, count: n, metaDate: m.date, live: !!m.live};
+  }
+  /* Synergie-Box für Deckansichten */
+  function synergyHtml(rt){
+    if(!rt) return '';
+    const pk = rt.packages.slice(0, 5), orph = rt.orphans.slice(0, 5);
+    const syn = Math.round(rt.synergy * 100);
+    return `<div class="card" style="margin-bottom:12px"><div class="row between"><b>🧩 Synergie</b><span class="small" style="color:${syn >= 60 ? 'var(--good)' : syn >= 40 ? 'var(--gold)' : 'var(--bad)'}">${syn} % der Karten arbeiten zusammen</span></div>
+      ${pk.length ? `<div class="tiny muted" style="margin:8px 0 4px">Pakete im Deck</div>${pk.map(p => `<div class="small" style="padding:3px 0">• <b>${esc(SYN.label(p.tag))}</b>: ${p.has} Karten${p.wants ? `, ${p.wants} profitieren davon` : ''}</div>`).join('')}` : '<div class="tiny muted" style="margin-top:6px">Kein klares Thema – eher einzeln starke Karten.</div>'}
+      ${orph.length ? `<div class="tiny muted" style="margin:8px 0 4px">Ohne Partner</div>${orph.map(o => `<div class="small miss" style="padding:2px 0">⚠️ ${esc(cName(o.g.rep))} braucht <b>${esc(SYN.label(o.tag))}</b> – im Deck nur ${o.sup}</div>`).join('')}` : ''}</div>`;
   }
 
   /* ---------- Oberfläche ---------- */
@@ -397,7 +423,7 @@ const ASSIST = (() => {
       <div style="text-align:center;min-width:40px"><div style="font-weight:800;font-size:22px;color:${TC[rt.tier]}">${rt.tier}</div><div class="tiny muted">${rt.score}</div></div>
       <div class="grow"><div class="row" style="gap:6px">${inkDot(r.pair[0])}${inkDot(r.pair[1])}<b>${esc(pairLabel(r.pair))}</b></div>
         ${rt.arche ? `<div class="tiny" style="color:var(--gold2);margin-top:2px">≈ Meta-Deck „${esc(rt.arche.name)}“</div>` : ''}
-        <div class="row wrap" style="gap:4px;margin-top:6px">${features(a).map(f => `<span class="tag">${esc(f)}</span>`).join('')}</div>
+        <div class="row wrap" style="gap:4px;margin-top:6px"><span class="tag" style="color:${rt.synergy >= 0.6 ? 'var(--good)' : rt.synergy >= 0.4 ? 'var(--gold)' : 'var(--bad)'}">🧩 ${Math.round(rt.synergy * 100)} % Synergie</span>${rt.packages.slice(0, 2).map(p => `<span class="tag">${esc(SYN.label(p.tag))} ×${p.has}</span>`).join('')}${features(a).slice(0, 1).map(f => `<span class="tag">${esc(f)}</span>`).join('')}</div>
         ${shortNote(r)}${rt.illegal && st.tourney ? `<div class="tiny" style="color:var(--gold2);margin-top:3px">ℹ️ ${rt.illegal} Karten nicht Core-legal – fürs Spielen mit Freunden kein Problem, für Turniere schon</div>` : ''}</div><span class="muted">›</span></button>`;
   }
   function tourneySwitch(){
@@ -529,6 +555,7 @@ const ASSIST = (() => {
         ${r.missCost ? `<div class="tiny" style="color:#ffc9c9;margin-top:8px">Fehlende Karten kosten ca. ${money(r.missCost)}</div>` : ''}</div>
       <div class="row wrap" style="gap:6px;margin-bottom:12px">${features(a).map(f => `<span class="chip">${esc(f)}</span>`).join('')}</div>
       ${rt.arche ? `<div class="card small" style="margin-bottom:12px">🏆 Entspricht dem Meta-Deck <b>${esc(rt.arche.name)}</b> – ${rt.arche.share}% der Turnierdecks, ${rt.arche.wr ?? '–'}% Siege.</div>` : ''}
+      ${synergyHtml(rt)}
       <details class="guide-box"><summary>📖 So spielst du dieses Deck</summary>${guide(cards)}</details>
       ${st.metaPick ? `<div class="seg" style="margin-bottom:6px"><button class="${st.mode === 'best' ? 'on' : ''}" data-act="as-alt" data-m="best">Meta-Version</button><button class="${st.mode === 'owned' ? 'on' : ''}" data-act="as-alt" data-m="owned">Mit meinen Karten</button></div>
       <p class="tiny muted" style="margin:0 0 10px">${st.mode === 'best' ? `So sieht das Deck in Bestform aus – davon hast du <b>${r.ownedCopies}/60</b> Karten. Die fehlenden stehen unten mit Preis.` : `Deine spielbare Version: Fehlende Meta-Karten wurden durch deine eigenen Karten in diesen Farben ersetzt – deshalb ist das Deck vollständig, aber nicht mehr ganz das Meta-Deck.`} Foxycana baut das Deck aus Kartenstärke und Thema nach, es ist keine exakte Turnier-Liste.</p>` : ''}
@@ -616,6 +643,6 @@ const ASSIST = (() => {
     const best = new Map(); for(const r of out){ const k = r.pair.join('/'); if(!best.has(k) || best.get(k).rt.score < r.rt.score) best.set(k, r); }
     return [...best.values()].sort((a, b) => b.rt.score - a.rt.score);
   }
-  return {recsFor, forPool, render, loadMeta, rateDeck, guide, analyze, features, metaLoaded: () => !!META, state: st, reset(){ POWER = null; GROUPS = null; st.best = null; st.recs = null; st.metaHave = null; }};
+  return {synergyHtml, recsFor, forPool, render, loadMeta, rateDeck, guide, analyze, features, metaLoaded: () => !!META, state: st, reset(){ POWER = null; GROUPS = null; st.best = null; st.recs = null; st.metaHave = null; }};
 })();
 window.ASSIST = ASSIST;

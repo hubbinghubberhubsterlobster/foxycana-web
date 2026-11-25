@@ -474,6 +474,7 @@ function renderDeck(){
     ${d.coop && partnerById(d.coop) ? `<div class="card small" style="margin-bottom:12px">🤝 Koop-Deck ${d.side === 'me' ? 'für dich' : 'von <b>' + esc(partnerById(d.coop).name) + '</b>'} – „${esc(d.duelName || '')}“${d.side === 'them' ? '. „Fehlt“ heißt hier: nicht in der Sammlung von ' + esc(partnerById(d.coop).name) + '.' : ''}</div>` : ''}
     ${d.pool && bundleById(d.pool) ? `<div class="card small" style="margin-bottom:12px">🎁 Deck aus dem Bundle <b>${esc(bundleById(d.pool).name)}</b> – „fehlt“ heißt hier: nicht im Bundle.</div>` : ''}
     ${warn.length ? `<div class="warn" style="margin-bottom:12px">${warn.map(esc).join('<br>')}</div>` : ''}
+    ${window.ASSIST && cards.length ? ASSIST.synergyHtml(ASSIST.rateDeck(d)) : ''}
     ${window.ASSIST && cards.length ? `<details class="guide-box"><summary>📖 So spielst du dieses Deck</summary>${ASSIST.guide(cards)}</details>` : ''}
     <div class="card"><b class="small">Kostenkurve</b><div class="curve">${st.curve.map((n, i) => `<div><span>${n || ''}</span><i style="height:${Math.round(n / maxC * 56)}px"></i>${i === 8 ? '8+' : i}</div>`).join('')}</div></div>
     <div class="row" style="gap:8px;margin:12px 0"><button class="btn grow" data-act="deck-pick">🧺 Zusammensuchen</button><button class="btn ghost" data-act="deck-add">+ Karten</button><button class="btn ghost" data-act="deck-menu">⋯</button></div>
